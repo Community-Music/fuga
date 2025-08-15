@@ -75,14 +75,6 @@ class FUGAAsset:
     # --- crud ---
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
         resp = self.client.post("/assets", data=data)
-        if resp.get("success"):
-            created = resp.get("data") or {}
-            if isinstance(created, dict) and "id" in created:
-                self.asset_id = created["id"]
-        return resp
-
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        resp = self.client.post("/assets", data=data)
         if not resp.get("success"):
             return resp
 
