@@ -1,128 +1,99 @@
-# python imports
-from typing import Optional, Dict, Any, List, Generator
-
-# local imports
-from .api_client import FUGAClient
+from typing import Optional, Dict, Any
+from .api import FUGAClient
 
 
 class FUGAPerson:
     """
     Represents a person in the FUGA API.
-
-    Provides methods for CRUD operations and additional functionality such as
-    publishing and updating territories.
+    Always returns dicts shaped like the client: {"success", "status_code", "data"? | "error"?}
     """
 
     def __init__(self, client: FUGAClient, person_id: Optional[str] = None):
-        """
-        Initialize the FUGAPerson instance.
+        self.client = client
+        self.person_id = person_id
 
-        Args:
-            client (FUGAClient): The FUGA API client instance.
-            person_id (Optional[str]): The unique ID of the person, if available.
-        """
-        self.client: FUGAClient = client
-        self.person_id: Optional[str] = person_id
+    def _need_id(self) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "status_code": None,
+            "error": {"message": "person_id is required"},
+        }
 
-    @classmethod
+    # ---- collection ----
     def fetch_list(
-        cls,
-        client: FUGAClient,
-        page: int = 0,
-        page_size: int = 10,
-        limit: Optional[int] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
+        self, page: int = 0, page_size: int = 10, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
-        Fetch a paginated list of people from FUGA.
-
-        Args:
-            client (FUGAClient): The FUGA API client instance.
-            page (int): The page number to start fetching from (default is 1).
-            page_size (int): The number of people per page (default is 10).
-            limit (Optional[int]): The maximum number of people to fetch (default is None for no limit).
-
-        Yields:
-            Generator[Dict[str, Any], None, None]: Each person's details as a dictionary.
-
-        Raises:
-            requests.HTTPError: If the API request fails.
+        Return a dict with people (optionally aggregated across pages up to `limit`).
+        Success shape: {"success": True, "status_code": int, "data": {"person": [...], "total": int, ...}}
         """
         endpoint = "/people"
         params = {"page": page, "page_size": page_size}
-        fetched_count = 0
+
+        # Single page
+        if not limit:
+            return self.client.get(endpoint, params=params)
+
+        # Aggregate up to `limit`
+        collected = []
+        last_status = None
+        total = None
+        pages_fetched = 0
 
         while True:
-            response = client.request("GET", endpoint, params=params)
-            people = response.get("person", [])
+            resp = self.client.get(endpoint, params=params)
+            last_status = resp.get("status_code")
 
-            for person in people:
-                yield person
-                fetched_count += 1
-                if limit and fetched_count >= limit:
-                    return
+            if not resp.get("success"):
+                return resp
 
-            # Break if no more people
-            total = response.get("total", 0)
-            if not people or fetched_count >= total:
+            data = resp.get("data") or {}
+            items = data.get("person") or []
+            total = data.get("total", total)
+
+            collected.extend(items)
+            pages_fetched += 1
+
+            if limit and len(collected) >= limit:
+                collected = collected[:limit]
                 break
-            # Otherwise, move to the next page
+
+            if not items or (total is not None and len(collected) >= total):
+                break
+
             params["page"] += 1
 
+        return {
+            "success": True,
+            "status_code": last_status,
+            "data": {
+                "person": collected,
+                "total": total if total is not None else len(collected),
+                "pages_fetched": pages_fetched,
+                "limit_applied": bool(limit),
+            },
+        }
+
+    # ---- single ----
     def fetch(self) -> Dict[str, Any]:
-        """
-        Fetch a single person's details from FUGA.
-
-        Returns:
-            Dict[str, Any]: The person object from FUGA
-
-        Raises:
-            ValueError: If the person ID is not set.
-        """
         if not self.person_id:
-            raise ValueError("Person ID is required for retrieval.")
-        return self.client.request("GET", f"/people/{self.person_id}")
+            return self._need_id()
+        return self.client.get(f"/people/{self.person_id}")
 
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Create a new person in FUGA.
-
-        Args:
-            data (Dict[str, Any]): The person data for creation.
-
-        Returns:
-            Dict[str, Any]: The person object created in FUGA.
-        """
-        response = self.client.request("POST", "/people", data=data)
-        self.person_id = response["id"]
-        return response
+        resp = self.client.post("/people", data=data)
+        if resp.get("success"):
+            created = resp.get("data") or {}
+            if isinstance(created, dict) and "id" in created:
+                self.person_id = created["id"]
+        return resp
 
     def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Update an existing person in FUGA.
-
-        Args:
-            data (Dict[str, Any]): The person data for update.
-
-        Returns:
-            Dict[str, Any]: The updated person object from FUGA.
-
-        Raises:
-            ValueError: If the person ID is not set.
-        """
         if not self.person_id:
-            raise ValueError("Person ID is required for updates.")
-        return self.client.request("PUT", f"/people/{self.person_id}", data=data)
+            return self._need_id()
+        return self.client.put(f"/people/{self.person_id}", data=data)
 
-    def delete(self) -> str:
-        """
-        Delete a person from FUGA.
-
-        Returns:
-            str: The plain text response indicating successful deletion.
-
-        Raises:
-            ValueError: If the person ID is not set.
-        """
+    def delete(self) -> Dict[str, Any]:
         if not self.person_id:
-            raise ValueError("Person ID is required for deletion.")
-        return self.client.request("DELETE", f"/people/{self.person_id}")
+            return self._need_id()
+        return self.client.delete(f"/people/{self.person_id}")

@@ -25,11 +25,11 @@ python -m scripts.product_test
 
 1. Clone the repository:
    ```zsh
-   git clone https://github.com/will-unified/fuga-api-testing.git
+   git clone https://github.com/will-unified/fuga.git
    ```
 2. Navigate to the project directory:
    ```zsh
-   cd fuga-api-testing
+   cd fuga
    ```
 3. Install the required dependencies:
    ```zsh
@@ -43,7 +43,7 @@ To use the functions provided by this package, import the necessary module class
 Example:
 
 ```python
-from fuga.api_client import FUGAClient
+from fuga.api import FUGAClient
 from fuga.products import FUGAProduct
 
 # Initialize the client
@@ -57,6 +57,14 @@ product = FUGAProduct(client)
 data = {"name": "New Album", "release_date": "2024-12-31"}
 response = product.create(product_data)
 print("Created Product:", response)
+```
+
+## Tests
+
+To run test suite:
+
+```
+pytest -q
 ```
 
 ## Acknowledgments

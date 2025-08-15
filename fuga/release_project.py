@@ -1,218 +1,156 @@
-# python imports
-from typing import Optional, Dict, Any, Generator
-
-# local imports
-from .api_client import FUGAClient
+from typing import Optional, Dict, Any, List
+from .api import FUGAClient  # adjust if your client module is named differently
 
 
 class FUGAReleaseProject:
     """
     Represents a release project in the FUGA API.
-
-    Provides methods for CRUD operations and managing release project identifiers.
+    Always returns dicts like the client: {"success", "status_code", "data"? | "error"?}
     """
 
     def __init__(self, client: FUGAClient, release_project_id: Optional[str] = None):
+        self.client = client
+        self.release_project_id = release_project_id
+
+    def _need_id(self) -> Dict[str, Any]:
+        return {"success": False, "status_code": None, "error": {"message": "release_project_id is required"}}
+
+    # ---- list / fetch ----
+    def fetch_list(self, page: int = 0, page_size: int = 10, limit: Optional[int] = None) -> Dict[str, Any]:
         """
-        Initialize the FUGAReleaseProject instance.
-
-        Args:
-            client (FUGAClient): The FUGA API client.
-            release_project_id (Optional[str]): The ID of the release project, if available.
-        """
-        self.client: FUGAClient = client
-        self.release_project_id: Optional[str] = release_project_id
-
-    @classmethod
-    def fetch_list(
-        cls,
-        client: FUGAClient,
-        page: int = 0,
-        page_size: int = 10,
-        limit: Optional[int] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
-        """
-        Fetch a paginated list of release projects from FUGA.
-
-        Args:
-            client (FUGAClient): The FUGA API client instance.
-            page (int): The page number to start fetching from (default is 1).
-            page_size (int): The number of release projects per page (default is 10).
-            limit (Optional[int]): The maximum number of release projects to fetch (default is None for no limit).
-
-        Yields:
-            Generator[Dict[str, Any], None, None]: Each release project's details as a dictionary.
-
-        Raises:
-            requests.HTTPError: If the API request fails.
+        Return a dict with release projects (optionally aggregated across pages up to `limit`).
+        Success shape: {"success": True, "status_code": int, "data": {"release_project": [...], "total": int, ...}}
         """
         endpoint = "/release_projects"
         params = {"page": page, "page_size": page_size}
-        fetched_count = 0
+
+        if not limit:
+            return self.client.get(endpoint, params=params)
+
+        collected: List[Dict[str, Any]] = []
+        last_status = None
+        total = None
+        pages_fetched = 0
 
         while True:
-            response = client.request("GET", endpoint, params=params)
-            release_projects = response.get("release_project", [])
+            resp = self.client.get(endpoint, params=params)
+            last_status = resp.get("status_code")
 
-            for release_project in release_projects:
-                yield release_project
-                fetched_count += 1
-                if limit and fetched_count >= limit:
-                    return
+            if not resp.get("success"):
+                return resp
 
-            # Break if no more release projects
-            total = response.get("total", 0)
-            if not release_projects or fetched_count >= total:
+            data = resp.get("data") or {}
+            items = data.get("release_project") or []
+            total = data.get("total", total)
+
+            collected.extend(items)
+            pages_fetched += 1
+
+            if limit and len(collected) >= limit:
+                collected = collected[:limit]
                 break
-            # Otherwise, move to the next page
+
+            if not items or (total is not None and len(collected) >= total):
+                break
+
             params["page"] += 1
+
+        return {
+            "success": True,
+            "status_code": last_status,
+            "data": {
+                "release_project": collected,
+                "total": total if total is not None else len(collected),
+                "pages_fetched": pages_fetched,
+                "limit_applied": bool(limit),
+            },
+        }
 
     def fetch(self) -> Dict[str, Any]:
-        """
-        Fetch a single release project's details from FUGA.
-
-        Returns:
-            Dict[str, Any]: The release project's details.
-
-        Raises:
-            ValueError: If the release project ID is not set.
-        """
         if not self.release_project_id:
-            raise ValueError("release project ID is required for retrieval.")
-        return self.client.request(
-            "GET", f"/release_projects/{self.release_project_id}"
-        )
+            return self._need_id()
+        return self.client.get(f"/release_projects/{self.release_project_id}")
 
+    # ---- CRUD ----
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Create a new release project in FUGA.
-
-        Args:
-            data (Dict[str, Any]): The release project data for creation.
-
-        Returns:
-            Dict[str, Any]: The response from the API.
-        """
-        response = self.client.request("POST", "/release_projects", data=data)
-        self.release_project_id = response["id"]
-        return response
+        resp = self.client.post("/release_projects", data=data)
+        if resp.get("success"):
+            created = resp.get("data") or {}
+            if isinstance(created, dict) and "id" in created:
+                self.release_project_id = created["id"]
+        return resp
 
     def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Update an existing release project in FUGA.
-
-        Args:
-            data (Dict[str, Any]): The release project data for update.
-
-        Returns:
-            Dict[str, Any]: The response from the API.
-
-        Raises:
-            ValueError: If the release project ID is not set.
-        """
         if not self.release_project_id:
-            raise ValueError("release project ID is required for updates.")
-        return self.client.request(
-            "PUT", f"/release_projects/{self.release_project_id}", data=data
-        )
+            return self._need_id()
+        return self.client.put(f"/release_projects/{self.release_project_id}", data=data)
 
-    def delete(self) -> str:
-        """
-        Delete a release project from FUGA.
-
-        Returns:
-            str: The plain text response from the API.
-
-        Raises:
-            ValueError: If the release project ID is not set.
-        """
+    def delete(self) -> Dict[str, Any]:
         if not self.release_project_id:
-            raise ValueError("release project ID is required for deletion.")
-        return self.client.request(
-            "DELETE", f"/release_projects/{self.release_project_id}"
-        )
+            return self._need_id()
+        return self.client.delete(f"/release_projects/{self.release_project_id}")
 
-    def fetch_products(
-        self,
-        page: int = 0,
-        page_size: int = 10,
-        limit: Optional[int] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
-        """
-        Fetch a paginated list of release project products from FUGA.
+    # ---- products on a release project ----
+    def fetch_products(self, page: int = 0, page_size: int = 10, limit: Optional[int] = None) -> Dict[str, Any]:
+        if not self.release_project_id:
+            return self._need_id()
 
-        Args:
-            page (int): The page number to start fetching from (default is 1).
-            page_size (int): The number of products per page (default is 10).
-            limit (Optional[int]): The maximum number of products to fetch (default is None for no limit).
-
-        Yields:
-            Generator[Dict[str, Any], None, None]: Each release project's products details as a dictionary.
-
-        Raises:
-            requests.HTTPError: If the API request fails.
-        """
         endpoint = f"/release_projects/{self.release_project_id}/products"
         params = {"page": page, "page_size": page_size}
-        fetched_count = 0
+
+        if not limit:
+            return self.client.get(endpoint, params=params)
+
+        collected: List[Dict[str, Any]] = []
+        last_status = None
+        total = None
+        pages_fetched = 0
 
         while True:
-            response = self.client.request("GET", endpoint, params=params)
-            release_projects = response.get("product", [])
+            resp = self.client.get(endpoint, params=params)
+            last_status = resp.get("status_code")
 
-            for release_project in release_projects:
-                yield release_project
-                fetched_count += 1
-                if limit and fetched_count >= limit:
-                    return
+            if not resp.get("success"):
+                return resp
 
-            # Break if no more release projects
-            total = response.get("total", 0)
-            if not release_projects or fetched_count >= total:
+            data = resp.get("data") or {}
+            items = data.get("product") or []
+            total = data.get("total", total)
+
+            collected.extend(items)
+            pages_fetched += 1
+
+            if limit and len(collected) >= limit:
+                collected = collected[:limit]
                 break
-            # Otherwise, move to the next page
+
+            if not items or (total is not None and len(collected) >= total):
+                break
+
             params["page"] += 1
 
-    def add_products(self, product_ids: list[str]) -> Dict[str, Any]:
-        """
-        Add products to a release project in FUGA.
+        return {
+            "success": True,
+            "status_code": last_status,
+            "data": {
+                "product": collected,
+                "total": total if total is not None else len(collected),
+                "pages_fetched": pages_fetched,
+                "limit_applied": bool(limit),
+            },
+        }
 
-        Args:
-            product_ids (list[str]): The list of product IDs to add.
-
-        Returns:
-            Dict[str, Any]: The response from the API.
-
-        Raises:
-            ValueError: If the release project ID is not set.
-        """
+    def add_products(self, product_ids: List[str]) -> Dict[str, Any]:
         if not self.release_project_id:
-            raise ValueError("release project ID is required for adding products.")
+            return self._need_id()
+        # Per your original code, API expects "products_ids"
         data = {"products_ids": product_ids}
-        return self.client.request(
-            "POST",
-            f"/release_projects/{self.release_project_id}/products",
-            data=data,
-        )
+        return self.client.post(f"/release_projects/{self.release_project_id}/products", data=data)
 
-    def remove_products(self, product_ids: list[str]) -> Dict[str, Any]:
-        """
-        Remove products from a release project in FUGA.
-
-        Args:
-            product_ids (list[str]): The list of product IDs to remove.
-
-        Returns:
-            Dict[str, Any]: The response from the API.
-
-        Raises:
-            ValueError: If the release project ID is not set.
-        """
+    def remove_products(self, product_ids: List[str]) -> Dict[str, Any]:
         if not self.release_project_id:
-            raise ValueError("release project ID is required for removing products.")
+            return self._need_id()
+        # Many APIs accept a JSON body with DELETE. If FUGA does, add a tiny helper on the client:
+        # def delete_json(self, endpoint, data=None): return self._request("DELETE", endpoint, json=data)
         data = {"products_ids": product_ids}
-        return self.client.request(
-            "DELETE",
-            f"/release_projects/{self.release_project_id}/products",
-            data=data,
-        )
+        return self.client.delete_json(f"/release_projects/{self.release_project_id}/products", data=data)

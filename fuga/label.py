@@ -1,127 +1,97 @@
-# python imports
-from typing import Optional, Dict, Any, Generator
-
-# local imports
-from .api_client import FUGAClient
+from typing import Optional, Dict, Any
+from .api import FUGAClient  # adjust if your client module is named differently
 
 
 class FUGALabel:
     """
     Represents a label in the FUGA API.
-
-    Provides methods for CRUD operations and managing label identifiers.
+    Always returns dicts shaped like the client: {"success", "status_code", "data"? | "error"?}
     """
 
     def __init__(self, client: FUGAClient, label_id: Optional[str] = None):
-        """
-        Initialize the FUGALabel instance.
+        self.client = client
+        self.label_id = label_id
 
-        Args:
-            client (FUGAClient): The FUGA API client.
-            label_id (Optional[str]): The ID of the label, if available.
-        """
-        self.client: FUGAClient = client
-        self.label_id: Optional[str] = label_id
+    def _need_id(self) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "status_code": None,
+            "error": {"message": "label_id is required"},
+        }
 
-    @classmethod
+    # ---- list / fetch ----
     def fetch_list(
-        cls,
-        client: FUGAClient,
-        page: int = 0,
-        page_size: int = 10,
-        limit: Optional[int] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
+        self, page: int = 0, page_size: int = 10, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
-        Fetch a paginated list of labels from FUGA.
-
-        Args:
-            client (FUGAClient): The FUGA API client instance.
-            page (int): The page number to start fetching from (default is 1).
-            page_size (int): The number of labels per page (default is 10).
-            limit (Optional[int]): The maximum number of labels to fetch (default is None for no limit).
-
-        Yields:
-            Generator[Dict[str, Any], None, None]: Each label's details as a dictionary.
-
-        Raises:
-            requests.HTTPError: If the API request fails.
+        Return a dict with labels (optionally aggregated across pages up to `limit`).
+        Success shape: {"success": True, "status_code": int, "data": {"label": [...], "total": int, ...}}
         """
         endpoint = "/labels"
         params = {"page": page, "page_size": page_size}
-        fetched_count = 0
+
+        if not limit:
+            return self.client.get(endpoint, params=params)
+
+        collected = []
+        last_status = None
+        total = None
+        pages_fetched = 0
 
         while True:
-            response = client.request("GET", endpoint, params=params)
-            labels = response.get("label", [])
+            resp = self.client.get(endpoint, params=params)
+            last_status = resp.get("status_code")
 
-            for label in labels:
-                yield label
-                fetched_count += 1
-                if limit and fetched_count >= limit:
-                    return
+            if not resp.get("success"):
+                return resp
 
-            # Break if no more labels
-            total = response.get("total", 0)
-            if not labels or fetched_count >= total:
+            data = resp.get("data") or {}
+            items = data.get("label") or []
+            total = data.get("total", total)
+
+            collected.extend(items)
+            pages_fetched += 1
+
+            if limit and len(collected) >= limit:
+                collected = collected[:limit]
                 break
-            # Otherwise, move to the next page
+
+            if not items or (total is not None and len(collected) >= total):
+                break
+
             params["page"] += 1
 
+        return {
+            "success": True,
+            "status_code": last_status,
+            "data": {
+                "label": collected,
+                "total": total if total is not None else len(collected),
+                "pages_fetched": pages_fetched,
+                "limit_applied": bool(limit),
+            },
+        }
+
     def fetch(self) -> Dict[str, Any]:
-        """
-        Fetch a single label's details from FUGA.
-
-        Returns:
-            Dict[str, Any]: The label's details.
-
-        Raises:
-            ValueError: If the label ID is not set.
-        """
         if not self.label_id:
-            raise ValueError("label ID is required for retrieval.")
-        return self.client.request("GET", f"/labels/{self.label_id}")
+            return self._need_id()
+        return self.client.get(f"/labels/{self.label_id}")
 
+    # ---- CRUD ----
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Create a new label in FUGA.
-
-        Args:
-            data (Dict[str, Any]): The label data for creation.
-
-        Returns:
-            Dict[str, Any]: The response from the API.
-        """
-        response = self.client.request("POST", "/labels", data=data)
-        self.label_id = response["id"]
-        return response
+        resp = self.client.post("/labels", data=data)
+        if resp.get("success"):
+            created = resp.get("data") or {}
+            if isinstance(created, dict) and "id" in created:
+                self.label_id = created["id"]
+        return resp
 
     def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Update an existing label in FUGA.
-
-        Args:
-            data (Dict[str, Any]): The label data for update.
-
-        Returns:
-            Dict[str, Any]: The response from the API.
-
-        Raises:
-            ValueError: If the label ID is not set.
-        """
         if not self.label_id:
-            raise ValueError("label ID is required for updates.")
-        return self.client.request("PUT", f"/labels/{self.label_id}", data=data)
+            return self._need_id()
+        return self.client.put(f"/labels/{self.label_id}", data=data)
 
-    def delete(self) -> str:
-        """
-        Delete a label from FUGA.
-
-        Returns:
-            str: The plain text response from the API.
-
-        Raises:
-            ValueError: If the label ID is not set.
-        """
+    def delete(self) -> Dict[str, Any]:
         if not self.label_id:
-            raise ValueError("label ID is required for deletion.")
-        return self.client.request("DELETE", f"/labels/{self.label_id}")
+            return self._need_id()
+        return self.client.delete(f"/labels/{self.label_id}")
