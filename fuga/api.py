@@ -101,12 +101,29 @@ class FUGAClient:
                     else:
                         error_payload = {"message": str(err)}
                 elif "errors" in data and isinstance(data["errors"], list):
-                    msgs = [
-                        e.get("message") if isinstance(e, dict) else str(e)
-                        for e in data["errors"]
-                    ]
+                    msgs = []
+                    for e in data["errors"]:
+                        if isinstance(e, dict):
+                            m = (
+                                e.get("message")
+                                or e.get("detail")
+                                or e.get("title")
+                                or ""
+                            )
+                            if not m:
+                                # last resort: serialize the dict so you see *something*
+                                try:
+                                    import json as _json
+
+                                    m = _json.dumps(e, ensure_ascii=False)
+                                except Exception:
+                                    m = str(e)
+                            msgs.append(str(m))
+                        else:
+                            msgs.append(str(e))
                     error_payload = {
-                        "message": "; ".join(msgs) or "Request failed",
+                        "message": "; ".join([m for m in msgs if m])
+                        or "Request failed",
                         "details": data["errors"],
                     }
                 else:

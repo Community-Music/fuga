@@ -81,6 +81,27 @@ class FUGAAsset:
                 self.asset_id = created["id"]
         return resp
 
+    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        resp = self.client.post("/assets", data=data)
+        if not resp.get("success"):
+            return resp
+
+        payload = resp.get("data")
+        asset_id = None
+        if isinstance(payload, dict):
+            if payload.get("id"):
+                asset_id = payload["id"]
+            elif isinstance(payload.get("asset"), dict) and payload["asset"].get("id"):
+                asset_id = payload["asset"]["id"]
+            elif isinstance(payload.get("asset"), list) and payload["asset"]:
+                first = payload["asset"][0]
+                if isinstance(first, dict) and first.get("id"):
+                    asset_id = first["id"]
+
+        if asset_id:
+            self.asset_id = asset_id
+        return resp
+
     def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
