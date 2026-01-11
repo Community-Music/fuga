@@ -263,3 +263,23 @@ class FUGATrends:
                 "limit_applied": True,
             },
         }
+
+    def trends_files_get(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        GET /trends_file_reports
+        Fetch trends file reports with optional query parameters.
+        params: Optional dictionary of query parameters, including:
+            - status (number, optional)
+            - dsp_id (number, optional)
+            - end_date (string <date>, format: yyyy-mm-dd)
+            - export_report_type (string <string>, Enum: "standard", "demographics", "aggregated", "nonstandard", "nonroyalty", "playlists")
+            - start_date (string <date>, format: yyyy-mm-dd)
+            - updated_since (long integer, epoch timestamp format in milliseconds)
+            - id_since (string)
+            - page (number, default: 0)
+            - size (number, default: 20)
+        Returns a dictionary with the API response.
+        """
+        return self.client.get("/trends_file_reports", params=params)
