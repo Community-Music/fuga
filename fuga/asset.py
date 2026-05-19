@@ -99,6 +99,21 @@ class FUGAAsset:
             return self._need_id()
         return self.client.put(f"/assets/{self.asset_id}", data=data)
 
+    def attach_to_product(
+        self, product_id: str, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        if not self.asset_id:
+            return self._need_id()
+        if not product_id:
+            return {
+                "success": False,
+                "status_code": None,
+                "error": {"message": "product_id is required"},
+            }
+        return self.client.put(
+            f"/products/{product_id}/assets/{self.asset_id}", data=data
+        )
+
     def delete(self) -> Dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
