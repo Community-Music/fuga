@@ -25,7 +25,6 @@ payload = {
     "available_separately": True,
     "allow_preorder": True,
     "allow_preorder_preview": False,
-    # "preorder_only": True,
     "preorder_type": "INSTANT_GRATIFICATION",  # "STANDARD" or "INSTANT_GRATIFICATION" or "PREORDER_ONLY"
     "asset_release_date": "2026-06-03",  # YYYY-MM-DD
 }
