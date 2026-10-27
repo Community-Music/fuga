@@ -19,7 +19,6 @@ output/
 
 # files for local uploading tests
 files/
-tests/
 
 # build files
 dist/

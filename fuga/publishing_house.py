@@ -1,100 +1,53 @@
 from typing import Any
 
-from .api import FUGAClient  # adjust if your client lives elsewhere
+from .api import BaseFUGAClient
+from .entity import FUGAEntity, paginate, requires_id
+from .response import FugaResponse
 
 
-class FUGAPublishingHouse:
-    """
-    Represents a publishing house in the FUGA API.
-    Always returns dicts shaped like the client: {"success", "status_code", "data"? | "error"?}
-    """
+class FUGAPublishingHouse(FUGAEntity):
+    """Represents a publishing house in the FUGA API."""
 
-    def __init__(self, client: FUGAClient, publishing_house_id: str | None = None):
-        self.client = client
+    id_field = "publishing_house_id"
+
+    def __init__(
+        self, client: BaseFUGAClient, publishing_house_id: str | None = None
+    ) -> None:
+        super().__init__(client)
         self.publishing_house_id = publishing_house_id
-
-    def _need_id(self) -> dict[str, Any]:
-        return {
-            "success": False,
-            "status_code": None,
-            "error": {"message": "publishing_house_id is required"},
-        }
 
     # ---- list / fetch ----
     def fetch_list(
         self, page: int = 0, page_size: int = 10, limit: int | None = None
-    ) -> dict[str, Any]:
-        """
-        Return a dict with publishing houses (optionally aggregated across pages up to `limit`).
-        Success shape: {"success": True, "status_code": int, "data": {"publishing_house": [...], "total": int, ...}}
-        """
-        endpoint = "/publishing_houses"
-        params = {"page": page, "page_size": page_size}
+    ) -> FugaResponse:
+        return paginate(
+            self.client,
+            "/publishing_houses",
+            "publishing_house",
+            page=page,
+            page_size=page_size,
+            limit=limit,
+        )
 
-        if not limit:
-            return self.client.get(endpoint, params=params)
-
-        collected = []
-        last_status = None
-        total = None
-        pages_fetched = 0
-
-        while True:
-            resp = self.client.get(endpoint, params=params)
-            last_status = resp.get("status_code")
-
-            if not resp.get("success"):
-                return resp
-
-            data = resp.get("data") or {}
-            items = data.get("publishing_house") or []
-            total = data.get("total", total)
-
-            collected.extend(items)
-            pages_fetched += 1
-
-            if limit and len(collected) >= limit:
-                collected = collected[:limit]
-                break
-
-            if not items or (total is not None and len(collected) >= total):
-                break
-
-            params["page"] += 1
-
-        return {
-            "success": True,
-            "status_code": last_status,
-            "data": {
-                "publishing_house": collected,
-                "total": total if total is not None else len(collected),
-                "pages_fetched": pages_fetched,
-                "limit_applied": bool(limit),
-            },
-        }
-
-    def fetch(self) -> dict[str, Any]:
-        if not self.publishing_house_id:
-            return self._need_id()
+    @requires_id
+    def fetch(self) -> FugaResponse:
         return self.client.get(f"/publishing_houses/{self.publishing_house_id}")
 
     # ---- CRUD ----
-    def create(self, data: dict[str, Any]) -> dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> FugaResponse:
         resp = self.client.post("/publishing_houses", data=data)
-        if resp.get("success"):
+        if resp["success"]:
             created = resp.get("data") or {}
             if isinstance(created, dict) and "id" in created:
                 self.publishing_house_id = created["id"]
         return resp
 
-    def update(self, data: dict[str, Any]) -> dict[str, Any]:
-        if not self.publishing_house_id:
-            return self._need_id()
+    @requires_id
+    def update(self, data: dict[str, Any]) -> FugaResponse:
         return self.client.put(
             f"/publishing_houses/{self.publishing_house_id}", data=data
         )
 
-    def delete(self) -> dict[str, Any]:
-        if not self.publishing_house_id:
-            return self._need_id()
+    @requires_id
+    def delete(self) -> FugaResponse:
         return self.client.delete(f"/publishing_houses/{self.publishing_house_id}")

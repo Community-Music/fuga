@@ -7,8 +7,8 @@ from fuga.asset import FUGAAsset
 
 load_dotenv()
 
-USERNAME = os.getenv("USERNAME")
-PASSWORD = os.getenv("PASSWORD")
+USERNAME = os.getenv("FUGA_USERNAME")
+PASSWORD = os.getenv("FUGA_PASSWORD")
 
 # Fill these in before running
 PRODUCT_ID = "1009137290231"

@@ -1,165 +1,104 @@
 from typing import Any
 
-from .api import FUGAClient
+from .api import BaseFUGAClient
+from .entity import FUGAEntity, paginate, requires_id
+from .response import FugaResponse
 
 
-class FUGAProduct:
-    """
-    Represents a product in the FUGA API.
-    Always returns dicts like the client: {"success", "status_code", "data"? | "error"?}
-    """
+class FUGAProduct(FUGAEntity):
+    """Represents a product in the FUGA API."""
 
-    def __init__(self, client: FUGAClient, product_id: str | None = None):
-        self.client = client
+    id_field = "product_id"
+
+    def __init__(self, client: BaseFUGAClient, product_id: str | None = None) -> None:
+        super().__init__(client)
         self.product_id = product_id
-
-    def _need_id(self) -> dict[str, Any]:
-        return {
-            "success": False,
-            "status_code": None,
-            "error": {"message": "product_id is required"},
-        }
 
     # ---- list / fetch ----
     def fetch_list(
         self, page: int = 0, page_size: int = 10, limit: int | None = None
-    ) -> dict[str, Any]:
-        """
-        Return a dict with products (optionally aggregated across pages up to `limit`).
-        Success shape: {"success": True, "status_code": int, "data": {"product": [...], "total": int, ...}}
-        """
-        endpoint = "/products"
-        params = {"page": page, "page_size": page_size}
+    ) -> FugaResponse:
+        return paginate(
+            self.client,
+            "/products",
+            "product",
+            page=page,
+            page_size=page_size,
+            limit=limit,
+        )
 
-        if not limit:
-            return self.client.get(endpoint, params=params)
-
-        collected: list[dict[str, Any]] = []
-        last_status = None
-        total = None
-        pages_fetched = 0
-
-        while True:
-            resp = self.client.get(endpoint, params=params)
-            last_status = resp.get("status_code")
-
-            if not resp.get("success"):
-                return resp
-
-            data = resp.get("data") or {}
-            items = data.get("product") or []
-            total = data.get("total", total)
-
-            collected.extend(items)
-            pages_fetched += 1
-
-            if limit and len(collected) >= limit:
-                collected = collected[:limit]
-                break
-
-            if not items or (total is not None and len(collected) >= total):
-                break
-
-            params["page"] += 1
-
-        return {
-            "success": True,
-            "status_code": last_status,
-            "data": {
-                "product": collected,
-                "total": total if total is not None else len(collected),
-                "pages_fetched": pages_fetched,
-                "limit_applied": bool(limit),
-            },
-        }
-
-    def fetch(self) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def fetch(self) -> FugaResponse:
         return self.client.get(f"/products/{self.product_id}")
 
     # ---- CRUD ----
-    def create(self, data: dict[str, Any]) -> dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> FugaResponse:
         resp = self.client.post("/products", data=data)
-        if resp.get("success"):
+        if resp["success"]:
             created = resp.get("data") or {}
             if isinstance(created, dict) and "id" in created:
                 self.product_id = created["id"]
         return resp
 
-    def update(self, data: dict[str, Any]) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def update(self, data: dict[str, Any]) -> FugaResponse:
         return self.client.put(f"/products/{self.product_id}", data=data)
 
-    def delete(self) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def delete(self) -> FugaResponse:
         return self.client.delete(f"/products/{self.product_id}")
 
     # ---- actions ----
-    def publish(self) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def publish(self) -> FugaResponse:
         return self.client.post(f"/products/{self.product_id}/publish")
 
-    def assign_barcode(self) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def assign_barcode(self) -> FugaResponse:
         return self.client.post(f"/products/{self.product_id}/barcode")
 
     # ---- product media/metadata ----
-    def fetch_image(self, size: str = "full_size") -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def fetch_image(self, size: str = "full_size") -> FugaResponse:
         return self.client.get_binary(f"/products/{self.product_id}/image/{size}")
 
-    def fetch_artworks(self) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def fetch_artworks(self) -> FugaResponse:
         return self.client.get(f"/products/{self.product_id}/artworks")
 
-    def fetch_live_links(self) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def fetch_live_links(self) -> FugaResponse:
         return self.client.get(f"/products/{self.product_id}/live_links")
 
-    def update_territories(self, territories: list[str]) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
-        # Assuming FUGA expects the raw list (per your original implementation)
+    @requires_id
+    def update_territories(self, territories: list[str]) -> FugaResponse:
         return self.client.put(
             f"/products/{self.product_id}/territories", data=territories
         )
 
     # ---- tracks / assets on a product ----
-    def fetch_assets(self) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def fetch_assets(self) -> FugaResponse:
         return self.client.get(f"/products/{self.product_id}/assets")
 
-    def add_asset(self, asset_id: str, sequence: int) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def add_asset(self, asset_id: str, sequence: int) -> FugaResponse:
         return self.client.post(
             f"/products/{self.product_id}/assets",
             data={"id": asset_id, "sequence": sequence},
         )
 
-    def remove_asset(self, asset_id: str) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def remove_asset(self, asset_id: str) -> FugaResponse:
         return self.client.delete(f"/products/{self.product_id}/assets/{asset_id}")
 
-    def update_asset_sequence(self, asset_id: str, sequence: int) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def update_asset_sequence(self, asset_id: str, sequence: int) -> FugaResponse:
         endpoint = f"/products/{self.product_id}/assets/{asset_id}/position/{sequence}"
         return self.client.put(endpoint, data={})
 
     # ---- uploads ----
-    def upload_cover_image(self, entity_id: str, image_path: str) -> dict[str, Any]:
-        if not self.product_id:
-            return self._need_id()
+    @requires_id
+    def upload_cover_image(self, entity_id: str, image_path: str) -> FugaResponse:
         data = {"id": entity_id, "type": "image"}
         return self.client.upload_file(image_path, data)
