@@ -1,4 +1,5 @@
-from typing import Optional, Dict, Any
+from typing import Any
+
 from .api import FUGAClient
 
 
@@ -10,11 +11,11 @@ class FUGAAsset:
     like contributors, instrument performers, publishers, and media uploads.
     """
 
-    def __init__(self, client: FUGAClient, asset_id: Optional[str] = None):
+    def __init__(self, client: FUGAClient, asset_id: str | None = None):
         self.client = client
         self.asset_id = asset_id
 
-    def _need_id(self) -> Dict[str, Any]:
+    def _need_id(self) -> dict[str, Any]:
         return {
             "success": False,
             "status_code": None,
@@ -23,8 +24,8 @@ class FUGAAsset:
 
     # --- list/fetch ---
     def fetch_list(
-        self, page: int = 0, page_size: int = 10, limit: Optional[int] = None
-    ) -> Dict[str, Any]:
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         endpoint = "/assets"
         params = {"page": page, "page_size": page_size}
 
@@ -67,13 +68,13 @@ class FUGAAsset:
             },
         }
 
-    def fetch(self) -> Dict[str, Any]:
+    def fetch(self) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.get(f"/assets/{self.asset_id}")
 
     # --- crud ---
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
         resp = self.client.post("/assets", data=data)
         if not resp.get("success"):
             return resp
@@ -94,14 +95,14 @@ class FUGAAsset:
             self.asset_id = asset_id
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.put(f"/assets/{self.asset_id}", data=data)
 
     def attach_to_product(
-        self, product_id: str, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, product_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         if not product_id:
@@ -114,23 +115,23 @@ class FUGAAsset:
             f"/products/{product_id}/assets/{self.asset_id}", data=data
         )
 
-    def delete(self) -> Dict[str, Any]:
+    def delete(self) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.delete(f"/assets/{self.asset_id}")
 
     # --- roles ---
-    def fetch_roles(self) -> Dict[str, Any]:
+    def fetch_roles(self) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.get(f"/assets/{self.asset_id}/contributors")
 
-    def add_role(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def add_role(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.post(f"/assets/{self.asset_id}/contributors", data=data)
 
-    def remove_role(self, contributor_id: str) -> Dict[str, Any]:
+    def remove_role(self, contributor_id: str) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.delete(
@@ -138,12 +139,12 @@ class FUGAAsset:
         )
 
     # --- instrument performers ---
-    def fetch_instrument_performers(self) -> Dict[str, Any]:
+    def fetch_instrument_performers(self) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.get(f"/assets/{self.asset_id}/instrument_performers")
 
-    def add_instrument_performer(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def add_instrument_performer(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.post(
@@ -152,7 +153,7 @@ class FUGAAsset:
 
     def remove_instrument_performer(
         self, instrument_performer_id: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.delete(
@@ -160,23 +161,23 @@ class FUGAAsset:
         )
 
     # --- publishers ---
-    def fetch_publishers(self) -> Dict[str, Any]:
+    def fetch_publishers(self) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.get(f"/assets/{self.asset_id}/publishers")
 
-    def add_publisher(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def add_publisher(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.post(f"/assets/{self.asset_id}/publishers", data=data)
 
-    def remove_publisher(self, publisher_id: str) -> Dict[str, Any]:
+    def remove_publisher(self, publisher_id: str) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.delete(f"/assets/{self.asset_id}/publishers/{publisher_id}")
 
     # --- media ---
-    def fetch_audio(self, original: bool = True) -> Dict[str, Any]:
+    def fetch_audio(self, original: bool = True) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         return self.client.get_binary(
@@ -185,7 +186,7 @@ class FUGAAsset:
 
     def upload_audio(
         self, audio_path: str, is_apple_digital_master: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         data = {
@@ -198,7 +199,7 @@ class FUGAAsset:
             data["original_encoding"] = "ADM"
         return self.client.upload_file(audio_path, data)
 
-    def upload_video(self, video_path: str) -> Dict[str, Any]:
+    def upload_video(self, video_path: str) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         data = {"id": self.asset_id, "type": "video"}
@@ -207,7 +208,7 @@ class FUGAAsset:
 
     def upload_video_preview_image(
         self, video_preview_image_id: str, image_path: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not self.asset_id:
             return self._need_id()
         data = {"id": video_preview_image_id, "type": "image_preview_image"}

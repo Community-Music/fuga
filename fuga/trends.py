@@ -1,12 +1,13 @@
-from typing import Optional, Dict, Any, List, Iterable, Union
-from .api import FUGAClient
+from collections.abc import Iterable
+from typing import Any
 
+from .api import FUGAClient
 
 SelectionType = str  # "dsp" | "territory" | "label" | "product" | "asset"
 SaleType = str  # "stream" | "download"
 
 
-def _normalize_asset_ids(value: Union[None, str, int, Iterable[Union[str, int]]]):
+def _normalize_asset_ids(value: None | str | int | Iterable[str | int]):
     if value is None:
         return None
     if isinstance(value, (str, int)):
@@ -40,19 +41,19 @@ class FUGATrends:
         self.client = client
 
     # ----- helpers -----
-    def _bad_arg(self, message: str) -> Dict[str, Any]:
+    def _bad_arg(self, message: str) -> dict[str, Any]:
         return {"success": False, "status_code": None, "error": {"message": message}}
 
     def _validate_selection(
         self, selection_type: SelectionType
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         if selection_type not in self._SELECTION_ALLOWED:
             return self._bad_arg(
                 f"selection_type must be one of {sorted(self._SELECTION_ALLOWED)}"
             )
         return None
 
-    def _validate_sale(self, sale_type: SaleType) -> Optional[Dict[str, Any]]:
+    def _validate_sale(self, sale_type: SaleType) -> dict[str, Any] | None:
         if sale_type not in self._SALE_ALLOWED:
             return self._bad_arg(
                 f"sale_type must be one of {sorted(self._SALE_ALLOWED)}"
@@ -60,9 +61,9 @@ class FUGATrends:
         return None
 
     @staticmethod
-    def _clean_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    def _clean_params(params: dict[str, Any]) -> dict[str, Any]:
         """Drop None values and coerce asset_ids to a list if present."""
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in params.items():
             if v is None:
                 continue
@@ -85,14 +86,14 @@ class FUGATrends:
         end_date: str,
         sale_type: SaleType = "stream",
         *,
-        product_id: Optional[int] = None,
-        artist_id: Optional[int] = None,
-        asset_id: Optional[int] = None,
-        asset_ids: Optional[Iterable[Union[int, str]]] = None,
-        release_project_id: Optional[int] = None,
-        territory_id: Optional[str] = None,
-        dsp_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        product_id: int | None = None,
+        artist_id: int | None = None,
+        asset_id: int | None = None,
+        asset_ids: Iterable[int | str] | None = None,
+        release_project_id: int | None = None,
+        territory_id: str | None = None,
+        dsp_id: int | None = None,
+    ) -> dict[str, Any]:
         """
         GET /trends/chart
 
@@ -126,7 +127,7 @@ class FUGATrends:
         start_date: str,
         end_date: str,
         **filters: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         GET /trends/totals
 
@@ -170,15 +171,15 @@ class FUGATrends:
         *,
         offset: int = 0,
         size: int = 10,
-        limit: Optional[int] = None,
-        product_id: Optional[int] = None,
-        artist_id: Optional[int] = None,
-        asset_id: Optional[int] = None,
-        asset_ids: Optional[Iterable[Union[int, str]]] = None,
-        release_project_id: Optional[int] = None,
-        territory_id: Optional[str] = None,
-        dsp_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        limit: int | None = None,
+        product_id: int | None = None,
+        artist_id: int | None = None,
+        asset_id: int | None = None,
+        asset_ids: Iterable[int | str] | None = None,
+        release_project_id: int | None = None,
+        territory_id: str | None = None,
+        dsp_id: int | None = None,
+    ) -> dict[str, Any]:
         """
         GET /trends
 
@@ -215,7 +216,7 @@ class FUGATrends:
             return self.client.get("/trends", params=params)
 
         # Aggregate multiple windows
-        collected: List[Dict[str, Any]] = []
+        collected: list[dict[str, Any]] = []
         windows = 0
         last_status = None
         cur_offset = int(offset)
@@ -264,9 +265,7 @@ class FUGATrends:
             },
         }
 
-    def trends_files_get(
-        self, params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def trends_files_get(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         GET /trends_file_reports
         Fetch trends file reports with optional query parameters.

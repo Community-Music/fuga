@@ -1,15 +1,16 @@
 import json
+from typing import Any
+
 import requests
-from typing import Optional, Dict, Any
 
 
 class FUGAClient:
     def __init__(
         self,
         api_url: str,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        auth_cookie: Optional[str] = None,
+        username: str | None = None,
+        password: str | None = None,
+        auth_cookie: str | None = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.auth_cookie = auth_cookie
@@ -38,36 +39,32 @@ class FUGAClient:
             self.session.headers["Cookie"] = self.auth_cookie
 
     def get(
-        self, endpoint: str, params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, endpoint: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self._request("GET", endpoint, params=params)
 
-    def post(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def post(self, endpoint: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request("POST", endpoint, json=data)
 
-    def put(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def put(self, endpoint: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request("PUT", endpoint, json=data)
 
     def patch(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, endpoint: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self._request("PATCH", endpoint, json=data)
 
     def delete(
-        self, endpoint: str, params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, endpoint: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self._request("DELETE", endpoint, params=params)
 
     def delete_json(
-        self, endpoint: str, data: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, endpoint: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self._request("DELETE", endpoint, json=data)
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+    def _request(self, method: str, endpoint: str, **kwargs) -> dict[str, Any]:
         try:
             resp = self.session.request(method, f"{self.api_url}{endpoint}", **kwargs)
             # Try to parse JSON; fall back to text
@@ -80,7 +77,7 @@ class FUGAClient:
                 return {"success": True, "status_code": resp.status_code, "data": data}
 
             # ---- Normalize error shape ----
-            error_payload: Dict[str, Any]
+            error_payload: dict[str, Any]
             if isinstance(data, dict):
                 # Common FUGA-style: {"error": {...}} or {"errors": [...]}
                 if "error" in data:
@@ -143,8 +140,8 @@ class FUGAClient:
             return {"success": False, "status_code": None, "error": {"message": str(e)}}
 
     def get_binary(
-        self, endpoint: str, params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, endpoint: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         try:
             resp = self.session.get(f"{self.api_url}{endpoint}", params=params)
             ctype = resp.headers.get("Content-Type", "")
@@ -167,13 +164,15 @@ class FUGAClient:
             return {"success": False, "status_code": None, "error": {"message": str(e)}}
 
     def upload_file(
-        self, file_path: str, data: Dict[str, Any], chunk_size: int = 5 * 1024 * 1024
-    ) -> Dict[str, Any]:
+        self, file_path: str, data: dict[str, Any], chunk_size: int = 5 * 1024 * 1024
+    ) -> dict[str, Any]:
         """
         Chunked upload to FUGA: /upload/start -> /upload (multipart chunks) -> /upload/finish
         `data` is the JSON you send to /upload/start, e.g. {"id": <asset_id>, "type": "audio", ...}
         """
-        import hashlib, math, os
+        import hashlib
+        import math
+        import os
 
         # 1) start session
         start = self.post("/upload/start", data=data)

@@ -1,4 +1,5 @@
-from typing import Optional, Dict, Any
+from typing import Any
+
 from .api import FUGAClient  # adjust if your client module is named differently
 
 
@@ -8,11 +9,11 @@ class FUGALabel:
     Always returns dicts shaped like the client: {"success", "status_code", "data"? | "error"?}
     """
 
-    def __init__(self, client: FUGAClient, label_id: Optional[str] = None):
+    def __init__(self, client: FUGAClient, label_id: str | None = None):
         self.client = client
         self.label_id = label_id
 
-    def _need_id(self) -> Dict[str, Any]:
+    def _need_id(self) -> dict[str, Any]:
         return {
             "success": False,
             "status_code": None,
@@ -21,8 +22,8 @@ class FUGALabel:
 
     # ---- list / fetch ----
     def fetch_list(
-        self, page: int = 0, page_size: int = 10, limit: Optional[int] = None
-    ) -> Dict[str, Any]:
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         """
         Return a dict with labels (optionally aggregated across pages up to `limit`).
         Success shape: {"success": True, "status_code": int, "data": {"label": [...], "total": int, ...}}
@@ -72,13 +73,13 @@ class FUGALabel:
             },
         }
 
-    def fetch(self) -> Dict[str, Any]:
+    def fetch(self) -> dict[str, Any]:
         if not self.label_id:
             return self._need_id()
         return self.client.get(f"/labels/{self.label_id}")
 
     # ---- CRUD ----
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
         resp = self.client.post("/labels", data=data)
         if resp.get("success"):
             created = resp.get("data") or {}
@@ -86,12 +87,12 @@ class FUGALabel:
                 self.label_id = created["id"]
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.label_id:
             return self._need_id()
         return self.client.put(f"/labels/{self.label_id}", data=data)
 
-    def delete(self) -> Dict[str, Any]:
+    def delete(self) -> dict[str, Any]:
         if not self.label_id:
             return self._need_id()
         return self.client.delete(f"/labels/{self.label_id}")

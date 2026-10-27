@@ -1,4 +1,5 @@
-from typing import Optional, Dict, Any
+from typing import Any
+
 from .api import FUGAClient  # adjust if your client lives elsewhere
 
 
@@ -8,11 +9,11 @@ class FUGAPublishingHouse:
     Always returns dicts shaped like the client: {"success", "status_code", "data"? | "error"?}
     """
 
-    def __init__(self, client: FUGAClient, publishing_house_id: Optional[str] = None):
+    def __init__(self, client: FUGAClient, publishing_house_id: str | None = None):
         self.client = client
         self.publishing_house_id = publishing_house_id
 
-    def _need_id(self) -> Dict[str, Any]:
+    def _need_id(self) -> dict[str, Any]:
         return {
             "success": False,
             "status_code": None,
@@ -21,8 +22,8 @@ class FUGAPublishingHouse:
 
     # ---- list / fetch ----
     def fetch_list(
-        self, page: int = 0, page_size: int = 10, limit: Optional[int] = None
-    ) -> Dict[str, Any]:
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         """
         Return a dict with publishing houses (optionally aggregated across pages up to `limit`).
         Success shape: {"success": True, "status_code": int, "data": {"publishing_house": [...], "total": int, ...}}
@@ -72,13 +73,13 @@ class FUGAPublishingHouse:
             },
         }
 
-    def fetch(self) -> Dict[str, Any]:
+    def fetch(self) -> dict[str, Any]:
         if not self.publishing_house_id:
             return self._need_id()
         return self.client.get(f"/publishing_houses/{self.publishing_house_id}")
 
     # ---- CRUD ----
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
         resp = self.client.post("/publishing_houses", data=data)
         if resp.get("success"):
             created = resp.get("data") or {}
@@ -86,14 +87,14 @@ class FUGAPublishingHouse:
                 self.publishing_house_id = created["id"]
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.publishing_house_id:
             return self._need_id()
         return self.client.put(
             f"/publishing_houses/{self.publishing_house_id}", data=data
         )
 
-    def delete(self) -> Dict[str, Any]:
+    def delete(self) -> dict[str, Any]:
         if not self.publishing_house_id:
             return self._need_id()
         return self.client.delete(f"/publishing_houses/{self.publishing_house_id}")

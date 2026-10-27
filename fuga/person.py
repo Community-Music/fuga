@@ -1,4 +1,5 @@
-from typing import Optional, Dict, Any
+from typing import Any
+
 from .api import FUGAClient
 
 
@@ -8,11 +9,11 @@ class FUGAPerson:
     Always returns dicts shaped like the client: {"success", "status_code", "data"? | "error"?}
     """
 
-    def __init__(self, client: FUGAClient, person_id: Optional[str] = None):
+    def __init__(self, client: FUGAClient, person_id: str | None = None):
         self.client = client
         self.person_id = person_id
 
-    def _need_id(self) -> Dict[str, Any]:
+    def _need_id(self) -> dict[str, Any]:
         return {
             "success": False,
             "status_code": None,
@@ -21,8 +22,8 @@ class FUGAPerson:
 
     # ---- collection ----
     def fetch_list(
-        self, page: int = 0, page_size: int = 10, limit: Optional[int] = None
-    ) -> Dict[str, Any]:
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         """
         Return a dict with people (optionally aggregated across pages up to `limit`).
         Success shape: {"success": True, "status_code": int, "data": {"person": [...], "total": int, ...}}
@@ -75,12 +76,12 @@ class FUGAPerson:
         }
 
     # ---- single ----
-    def fetch(self) -> Dict[str, Any]:
+    def fetch(self) -> dict[str, Any]:
         if not self.person_id:
             return self._need_id()
         return self.client.get(f"/people/{self.person_id}")
 
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
         resp = self.client.post("/people", data=data)
         if resp.get("success"):
             created = resp.get("data") or {}
@@ -88,12 +89,12 @@ class FUGAPerson:
                 self.person_id = created["id"]
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.person_id:
             return self._need_id()
         return self.client.put(f"/people/{self.person_id}", data=data)
 
-    def delete(self) -> Dict[str, Any]:
+    def delete(self) -> dict[str, Any]:
         if not self.person_id:
             return self._need_id()
         return self.client.delete(f"/people/{self.person_id}")

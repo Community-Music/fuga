@@ -1,5 +1,5 @@
 # python imports
-from typing import Optional, Dict, Any
+from typing import Any
 
 # local imports
 from .api import FUGAClient
@@ -12,7 +12,7 @@ class FUGAArtist:
     Provides methods for CRUD operations and managing artist identifiers.
     """
 
-    def __init__(self, client: FUGAClient, artist_id: Optional[str] = None):
+    def __init__(self, client: FUGAClient, artist_id: str | None = None):
         """
         Initialize the FUGAArtist instance.
 
@@ -21,12 +21,18 @@ class FUGAArtist:
             artist_id (Optional[str]): The ID of the artist, if available.
         """
         self.client: FUGAClient = client
-        self.artist_id: Optional[str] = artist_id
+        self.artist_id: str | None = artist_id
 
-    def _need_id(self) -> Dict[str, Any]:
-        return {"success": False, "status_code": None, "error": {"message": "artist_id is required"}}
+    def _need_id(self) -> dict[str, Any]:
+        return {
+            "success": False,
+            "status_code": None,
+            "error": {"message": "artist_id is required"},
+        }
 
-    def fetch_list(self, page: int = 0, page_size: int = 10, limit: Optional[int] = None) -> Dict[str, Any]:
+    def fetch_list(
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         """
         Return a dict with artists (possibly across multiple pages if limit is set).
         Shape: {"success", "status_code", "data": {"artist": [...], "total": int, ...}} | {"success": False, "error": ...}
@@ -78,8 +84,7 @@ class FUGAArtist:
             },
         }
 
-
-    def fetch(self) -> Dict[str, Any]:
+    def fetch(self) -> dict[str, Any]:
         """Fetch a single artist's details from FUGA."""
         if not self.artist_id:
             return self._need_id()
@@ -87,8 +92,8 @@ class FUGAArtist:
         resp = self.client.get(f"/artists/{self.artist_id}")
         return resp
 
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new artist in FUGA. """
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a new artist in FUGA."""
         resp = self.client.post("/artists", data=data)
 
         if resp["success"]:
@@ -98,46 +103,52 @@ class FUGAArtist:
 
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update(self, data: dict[str, Any]) -> dict[str, Any]:
         """Update an existing artist in FUGA."""
         if not self.artist_id:
             return self._need_id()
 
         return self.client.put(f"/artists/{self.artist_id}", data=data)
 
-    def delete(self) -> Dict[str, Any]:
+    def delete(self) -> dict[str, Any]:
         """Delete the artist from FUGA."""
         if not self.artist_id:
             return self._need_id()
 
         return self.client.delete(f"/artists/{self.artist_id}")
 
-    def fetch_identifiers(self) -> Dict[str, Any]:
+    def fetch_identifiers(self) -> dict[str, Any]:
         """Fetch all identifiers for the artist."""
         if not self.artist_id:
             return self._need_id()
         return self.client.get(f"/artists/{self.artist_id}/identifier")
 
-    def fetch_identifier(self, identifier_id: str) -> Dict[str, Any]:
+    def fetch_identifier(self, identifier_id: str) -> dict[str, Any]:
         """Fetch a specific identifier for the artist."""
         if not self.artist_id:
             return self._need_id()
         return self.client.get(f"/artists/{self.artist_id}/identifier/{identifier_id}")
 
-    def create_identifier(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create_identifier(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a new identifier for the artist."""
         if not self.artist_id:
             return self._need_id()
         return self.client.post(f"/artists/{self.artist_id}/identifier", data=data)
 
-    def update_identifier(self, identifier_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update_identifier(
+        self, identifier_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Update an existing identifier for the artist."""
         if not self.artist_id:
             return self._need_id()
-        return self.client.put(f"/artists/{self.artist_id}/identifier/{identifier_id}", data=data)
+        return self.client.put(
+            f"/artists/{self.artist_id}/identifier/{identifier_id}", data=data
+        )
 
-    def delete_identifier(self, identifier_id: str) -> Dict[str, Any]:
+    def delete_identifier(self, identifier_id: str) -> dict[str, Any]:
         """Delete a specific identifier for the artist."""
         if not self.artist_id:
             return self._need_id()
-        return self.client.delete(f"/artists/{self.artist_id}/identifier/{identifier_id}")
+        return self.client.delete(
+            f"/artists/{self.artist_id}/identifier/{identifier_id}"
+        )

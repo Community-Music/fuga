@@ -1,6 +1,7 @@
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
 import os
+from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
 
 from fuga.api import FUGAClient
 from fuga.trends import trends_files_get

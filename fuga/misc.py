@@ -1,5 +1,5 @@
 # python imports
-from typing import Optional, Dict, Any, List
+from typing import Any
 
 # local imports
 from .api import FUGAClient
@@ -15,15 +15,15 @@ class FUGAMisc:
         self.client = client
 
     # ---- genres / subgenres ----
-    def fetch_genres(self) -> Dict[str, Any]:
+    def fetch_genres(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/genres")
 
     def fetch_subgenres(
         self,
         page: int = 0,
         page_size: int = 50,
-        limit: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        limit: int | None = None,
+    ) -> dict[str, Any]:
         """
         Return a dict with subgenres (optionally aggregated across pages up to `limit`).
         Success shape: {"success": True, "status_code": int, "data": {"subgenre": [...], "total": int, ...}}
@@ -34,7 +34,7 @@ class FUGAMisc:
         if not limit:
             return self.client.get(endpoint, params=params)
 
-        collected: List[Dict[str, Any]] = []
+        collected: list[dict[str, Any]] = []
         last_status = None
         total = None
         pages_fetched = 0
@@ -73,34 +73,34 @@ class FUGAMisc:
             },
         }
 
-    def create_subgenre(self, subgenre_data: Dict[str, Any]) -> Dict[str, Any]:
+    def create_subgenre(self, subgenre_data: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/miscellaneous/subgenres", data=subgenre_data)
 
-    def delete_subgenre(self, subgenre_id: str) -> Dict[str, Any]:
+    def delete_subgenre(self, subgenre_id: str) -> dict[str, Any]:
         return self.client.delete(f"/miscellaneous/subgenres/{subgenre_id}")
 
     # ---- simple lookups ----
-    def fetch_languages(self) -> Dict[str, Any]:
+    def fetch_languages(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/languages")
 
-    def fetch_audio_locales(self) -> Dict[str, Any]:
+    def fetch_audio_locales(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/audio_locales")
 
-    def fetch_contributor_roles(self) -> Dict[str, Any]:
+    def fetch_contributor_roles(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/contributor_roles")
 
-    def fetch_catalog_tiers(self) -> Dict[str, Any]:
+    def fetch_catalog_tiers(self) -> dict[str, Any]:
         # Path matches your original (hyphen)
         return self.client.get("/miscellaneous/catalog-tiers")
 
-    def fetch_instruments(self) -> Dict[str, Any]:
+    def fetch_instruments(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/instruments")
 
-    def fetch_territories(self) -> Dict[str, Any]:
+    def fetch_territories(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/territories")
 
-    def fetch_encodings(self) -> Dict[str, Any]:
+    def fetch_encodings(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/encodings")
 
-    def fetch_lead_times(self) -> Dict[str, Any]:
+    def fetch_lead_times(self) -> dict[str, Any]:
         return self.client.get("/miscellaneous/lead_times")

@@ -1,4 +1,5 @@
-from typing import Optional, Dict, Any, List
+from typing import Any
+
 from .api import FUGAClient
 
 
@@ -8,15 +9,21 @@ class FUGAProduct:
     Always returns dicts like the client: {"success", "status_code", "data"? | "error"?}
     """
 
-    def __init__(self, client: FUGAClient, product_id: Optional[str] = None):
+    def __init__(self, client: FUGAClient, product_id: str | None = None):
         self.client = client
         self.product_id = product_id
 
-    def _need_id(self) -> Dict[str, Any]:
-        return {"success": False, "status_code": None, "error": {"message": "product_id is required"}}
+    def _need_id(self) -> dict[str, Any]:
+        return {
+            "success": False,
+            "status_code": None,
+            "error": {"message": "product_id is required"},
+        }
 
     # ---- list / fetch ----
-    def fetch_list(self, page: int = 0, page_size: int = 10, limit: Optional[int] = None) -> Dict[str, Any]:
+    def fetch_list(
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         """
         Return a dict with products (optionally aggregated across pages up to `limit`).
         Success shape: {"success": True, "status_code": int, "data": {"product": [...], "total": int, ...}}
@@ -27,7 +34,7 @@ class FUGAProduct:
         if not limit:
             return self.client.get(endpoint, params=params)
 
-        collected: List[Dict[str, Any]] = []
+        collected: list[dict[str, Any]] = []
         last_status = None
         total = None
         pages_fetched = 0
@@ -66,13 +73,13 @@ class FUGAProduct:
             },
         }
 
-    def fetch(self) -> Dict[str, Any]:
+    def fetch(self) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.get(f"/products/{self.product_id}")
 
     # ---- CRUD ----
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
         resp = self.client.post("/products", data=data)
         if resp.get("success"):
             created = resp.get("data") or {}
@@ -80,56 +87,58 @@ class FUGAProduct:
                 self.product_id = created["id"]
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.put(f"/products/{self.product_id}", data=data)
 
-    def delete(self) -> Dict[str, Any]:
+    def delete(self) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.delete(f"/products/{self.product_id}")
 
     # ---- actions ----
-    def publish(self) -> Dict[str, Any]:
+    def publish(self) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.post(f"/products/{self.product_id}/publish")
 
-    def assign_barcode(self) -> Dict[str, Any]:
+    def assign_barcode(self) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.post(f"/products/{self.product_id}/barcode")
 
     # ---- product media/metadata ----
-    def fetch_image(self, size: str = "full_size") -> Dict[str, Any]:
+    def fetch_image(self, size: str = "full_size") -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.get_binary(f"/products/{self.product_id}/image/{size}")
 
-    def fetch_artworks(self) -> Dict[str, Any]:
+    def fetch_artworks(self) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.get(f"/products/{self.product_id}/artworks")
 
-    def fetch_live_links(self) -> Dict[str, Any]:
+    def fetch_live_links(self) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.get(f"/products/{self.product_id}/live_links")
 
-    def update_territories(self, territories: List[str]) -> Dict[str, Any]:
+    def update_territories(self, territories: list[str]) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         # Assuming FUGA expects the raw list (per your original implementation)
-        return self.client.put(f"/products/{self.product_id}/territories", data=territories)
+        return self.client.put(
+            f"/products/{self.product_id}/territories", data=territories
+        )
 
     # ---- tracks / assets on a product ----
-    def fetch_assets(self) -> Dict[str, Any]:
+    def fetch_assets(self) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.get(f"/products/{self.product_id}/assets")
 
-    def add_asset(self, asset_id: str, sequence: int) -> Dict[str, Any]:
+    def add_asset(self, asset_id: str, sequence: int) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.post(
@@ -137,19 +146,19 @@ class FUGAProduct:
             data={"id": asset_id, "sequence": sequence},
         )
 
-    def remove_asset(self, asset_id: str) -> Dict[str, Any]:
+    def remove_asset(self, asset_id: str) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         return self.client.delete(f"/products/{self.product_id}/assets/{asset_id}")
 
-    def update_asset_sequence(self, asset_id: str, sequence: int) -> Dict[str, Any]:
+    def update_asset_sequence(self, asset_id: str, sequence: int) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         endpoint = f"/products/{self.product_id}/assets/{asset_id}/position/{sequence}"
         return self.client.put(endpoint, data={})
 
     # ---- uploads ----
-    def upload_cover_image(self, entity_id: str, image_path: str) -> Dict[str, Any]:
+    def upload_cover_image(self, entity_id: str, image_path: str) -> dict[str, Any]:
         if not self.product_id:
             return self._need_id()
         data = {"id": entity_id, "type": "image"}

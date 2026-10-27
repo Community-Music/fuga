@@ -1,4 +1,5 @@
-from typing import Optional, Dict, Any, List
+from typing import Any
+
 from .api import FUGAClient  # adjust if your client module is named differently
 
 
@@ -8,15 +9,21 @@ class FUGAReleaseProject:
     Always returns dicts like the client: {"success", "status_code", "data"? | "error"?}
     """
 
-    def __init__(self, client: FUGAClient, release_project_id: Optional[str] = None):
+    def __init__(self, client: FUGAClient, release_project_id: str | None = None):
         self.client = client
         self.release_project_id = release_project_id
 
-    def _need_id(self) -> Dict[str, Any]:
-        return {"success": False, "status_code": None, "error": {"message": "release_project_id is required"}}
+    def _need_id(self) -> dict[str, Any]:
+        return {
+            "success": False,
+            "status_code": None,
+            "error": {"message": "release_project_id is required"},
+        }
 
     # ---- list / fetch ----
-    def fetch_list(self, page: int = 0, page_size: int = 10, limit: Optional[int] = None) -> Dict[str, Any]:
+    def fetch_list(
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         """
         Return a dict with release projects (optionally aggregated across pages up to `limit`).
         Success shape: {"success": True, "status_code": int, "data": {"release_project": [...], "total": int, ...}}
@@ -27,7 +34,7 @@ class FUGAReleaseProject:
         if not limit:
             return self.client.get(endpoint, params=params)
 
-        collected: List[Dict[str, Any]] = []
+        collected: list[dict[str, Any]] = []
         last_status = None
         total = None
         pages_fetched = 0
@@ -66,13 +73,13 @@ class FUGAReleaseProject:
             },
         }
 
-    def fetch(self) -> Dict[str, Any]:
+    def fetch(self) -> dict[str, Any]:
         if not self.release_project_id:
             return self._need_id()
         return self.client.get(f"/release_projects/{self.release_project_id}")
 
     # ---- CRUD ----
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
         resp = self.client.post("/release_projects", data=data)
         if resp.get("success"):
             created = resp.get("data") or {}
@@ -80,18 +87,22 @@ class FUGAReleaseProject:
                 self.release_project_id = created["id"]
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def update(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.release_project_id:
             return self._need_id()
-        return self.client.put(f"/release_projects/{self.release_project_id}", data=data)
+        return self.client.put(
+            f"/release_projects/{self.release_project_id}", data=data
+        )
 
-    def delete(self) -> Dict[str, Any]:
+    def delete(self) -> dict[str, Any]:
         if not self.release_project_id:
             return self._need_id()
         return self.client.delete(f"/release_projects/{self.release_project_id}")
 
     # ---- products on a release project ----
-    def fetch_products(self, page: int = 0, page_size: int = 10, limit: Optional[int] = None) -> Dict[str, Any]:
+    def fetch_products(
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> dict[str, Any]:
         if not self.release_project_id:
             return self._need_id()
 
@@ -101,7 +112,7 @@ class FUGAReleaseProject:
         if not limit:
             return self.client.get(endpoint, params=params)
 
-        collected: List[Dict[str, Any]] = []
+        collected: list[dict[str, Any]] = []
         last_status = None
         total = None
         pages_fetched = 0
@@ -140,17 +151,21 @@ class FUGAReleaseProject:
             },
         }
 
-    def add_products(self, product_ids: List[str]) -> Dict[str, Any]:
+    def add_products(self, product_ids: list[str]) -> dict[str, Any]:
         if not self.release_project_id:
             return self._need_id()
         # Per your original code, API expects "products_ids"
         data = {"products_ids": product_ids}
-        return self.client.post(f"/release_projects/{self.release_project_id}/products", data=data)
+        return self.client.post(
+            f"/release_projects/{self.release_project_id}/products", data=data
+        )
 
-    def remove_products(self, product_ids: List[str]) -> Dict[str, Any]:
+    def remove_products(self, product_ids: list[str]) -> dict[str, Any]:
         if not self.release_project_id:
             return self._need_id()
         # Many APIs accept a JSON body with DELETE. If FUGA does, add a tiny helper on the client:
         # def delete_json(self, endpoint, data=None): return self._request("DELETE", endpoint, json=data)
         data = {"products_ids": product_ids}
-        return self.client.delete_json(f"/release_projects/{self.release_project_id}/products", data=data)
+        return self.client.delete_json(
+            f"/release_projects/{self.release_project_id}/products", data=data
+        )
