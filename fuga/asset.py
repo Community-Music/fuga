@@ -2,7 +2,7 @@ from typing import Any
 
 from .api import BaseFUGAClient
 from .entity import FUGAEntity, paginate, requires_id, v2_only
-from .response import FugaResponse, error_response
+from .response import FugaResponse
 
 
 class FUGAAsset(FUGAEntity):
@@ -57,10 +57,8 @@ class FUGAAsset(FUGAEntity):
     def update(self, data: dict[str, Any]) -> FugaResponse:
         return self.client.put(f"/assets/{self.asset_id}", data=data)
 
-    @requires_id
+    @requires_id("product_id")
     def attach_to_product(self, product_id: str, data: dict[str, Any]) -> FugaResponse:
-        if not product_id:
-            return error_response("product_id is required")
         return self.client.put(
             f"/products/{product_id}/assets/{self.asset_id}", data=data
         )
@@ -87,7 +85,7 @@ class FUGAAsset(FUGAEntity):
     def add_publisher(self, data: dict[str, Any]) -> FugaResponse:
         return self.client.post(f"/assets/{self.asset_id}/publishers", data=data)
 
-    @requires_id
+    @requires_id("publisher_id")
     def remove_publisher(self, publisher_id: str) -> FugaResponse:
         return self.client.delete(f"/assets/{self.asset_id}/publishers/{publisher_id}")
 
@@ -127,7 +125,7 @@ class FUGAAsset(FUGAEntity):
 
     # --- v2 only: FUGA removed these in API v3 ---
     @v2_only
-    @requires_id
+    @requires_id("contributor_id")
     def remove_role(self, contributor_id: str) -> FugaResponse:
         """Removes a contributor entry by its entry id; v3 removes by person id."""
         return self.client.delete(
@@ -147,7 +145,7 @@ class FUGAAsset(FUGAEntity):
         )
 
     @v2_only
-    @requires_id
+    @requires_id("instrument_performer_id")
     def remove_instrument_performer(self, instrument_performer_id: str) -> FugaResponse:
         return self.client.delete(
             f"/assets/{self.asset_id}/instrument_performers/{instrument_performer_id}"

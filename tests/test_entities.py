@@ -12,12 +12,14 @@ from fuga.api import BaseFUGAClient
 from fuga.artist import FUGAArtist
 from fuga.asset import FUGAAsset
 from fuga.delivery_instructions import FUGADeliveryInstructions
+from fuga.entity import requires_id
 from fuga.label import FUGALabel
 from fuga.misc import FUGAMisc
 from fuga.person import FUGAPerson
 from fuga.product import FUGAProduct
 from fuga.publishing_house import FUGAPublishingHouse
 from fuga.release_project import FUGAReleaseProject
+from fuga.response import FugaResponse
 
 from .conftest import API_URL
 
@@ -545,14 +547,97 @@ def test_calls_without_an_id_fail_without_a_request(mocked, client, case):
     assert len(mocked.calls) == 0
 
 
-def test_attach_to_product_needs_a_product_id(mocked, client):
-    resp = FUGAAsset(client, "a1").attach_to_product("", BODY)
+def id_arg_case(name, invoke, arg_name):
+    return pytest.param(invoke, arg_name, id=name)
+
+
+@pytest.mark.parametrize(
+    ("invoke", "arg_name"),
+    [
+        id_arg_case(
+            "FUGAAsset.attach_to_product",
+            lambda c: FUGAAsset(c, "a1").attach_to_product("", BODY),
+            "product_id",
+        ),
+        id_arg_case(
+            "FUGAAsset.remove_publisher",
+            lambda c: FUGAAsset(c, "a1").remove_publisher(""),
+            "publisher_id",
+        ),
+        id_arg_case(
+            "FUGAAsset.remove_role",
+            lambda c: FUGAAsset(c, "a1").remove_role(""),
+            "contributor_id",
+        ),
+        id_arg_case(
+            "FUGAAsset.remove_instrument_performer",
+            lambda c: FUGAAsset(c, "a1").remove_instrument_performer(""),
+            "instrument_performer_id",
+        ),
+        id_arg_case(
+            "FUGAProduct.remove_asset",
+            lambda c: FUGAProduct(c, "p1").remove_asset(""),
+            "asset_id",
+        ),
+        id_arg_case(
+            "FUGAProduct.update_asset_sequence",
+            lambda c: FUGAProduct(c, "p1").update_asset_sequence(
+                asset_id="", sequence=1
+            ),
+            "asset_id",
+        ),
+        id_arg_case(
+            "FUGAArtist.fetch_identifier",
+            lambda c: FUGAArtist(c, "ar1").fetch_identifier(""),
+            "identifier_id",
+        ),
+        id_arg_case(
+            "FUGAArtist.update_identifier",
+            lambda c: FUGAArtist(c, "ar1").update_identifier("", BODY),
+            "identifier_id",
+        ),
+        id_arg_case(
+            "FUGAArtist.delete_identifier",
+            lambda c: FUGAArtist(c, "ar1").delete_identifier(""),
+            "identifier_id",
+        ),
+        id_arg_case(
+            "FUGADeliveryInstructions.fetch_dsp_history",
+            lambda c: FUGADeliveryInstructions(c, "p1").fetch_dsp_history(""),
+            "dsp_id",
+        ),
+        id_arg_case(
+            "FUGAMisc.delete_subgenre",
+            lambda c: FUGAMisc(c).delete_subgenre(""),
+            "subgenre_id",
+        ),
+    ],
+)
+def test_calls_without_an_id_argument_fail_without_a_request(
+    mocked, client, invoke, arg_name
+):
+    resp = invoke(client)
 
     assert resp == {
         "success": False,
         "status_code": None,
-        "error": {"message": "product_id is required"},
+        "error": {"message": f"{arg_name} is required"},
     }
+    assert len(mocked.calls) == 0
+
+
+def test_the_entity_id_is_checked_before_id_arguments(mocked, client):
+    resp = FUGAAsset(client).remove_publisher("")
+
+    assert resp.get("error") == {"message": "asset_id is required"}
+
+
+def test_requires_id_rejects_an_argument_the_method_lacks():
+    with pytest.raises(TypeError, match="has no argument publisher_id"):
+
+        @requires_id("publisher_id")
+        def remove(self: Any, other_id: str) -> FugaResponse:
+            ...
 
 
 # ---- create stores the new id ----
@@ -871,6 +956,9 @@ class V3Client(BaseFUGAClient):
     def _is_authenticated(self):
         return True
 
+    def authenticate(self):
+        pass
+
 
 @pytest.mark.parametrize(
     ("name", "invoke"),
@@ -954,6 +1042,47 @@ def test_subgenres_return_a_failed_page(mocked, client):
     assert resp == {"success": False, "status_code": 500, "error": {"code": "BOOM"}}
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"json": [1, 2]},
+        {"body": "ok"},
+        {"json": None},
+        {"json": {"subgenre": {"id": "S1"}}},
+    ],
+    ids=["list", "text", "null", "subgenre-not-a-list"],
+)
+def test_a_page_without_a_list_is_an_error(mocked, client, reply):
+    mocked.get(f"{API_URL}{SUBGENRES}", **reply)
+
+    resp = FUGAMisc(client).fetch_subgenres()
+
+    assert resp == {
+        "success": False,
+        "status_code": 200,
+        "error": {
+            "message": f"FUGA returned a page of {SUBGENRES} without a subgenre list"
+        },
+    }
+
+
+def test_pagination_stops_at_the_page_cap(mocked, client, monkeypatch):
+    monkeypatch.setattr("fuga.entity.MAX_PAGES", 3)
+    # The same non-empty page, with no total, for every page number
+    page = mocked.get(f"{API_URL}{SUBGENRES}", json={"subgenre": [1]})
+
+    resp = FUGAMisc(client).fetch_subgenres()
+
+    assert resp == {
+        "success": False,
+        "status_code": 200,
+        "error": {
+            "message": f"Stopped after 3 pages of {SUBGENRES} without reaching the end"
+        },
+    }
+    assert page.call_count == 3
+
+
 # ---- audit follow-ups: pagination start page, limit=0, mocked clients ----
 
 
@@ -997,9 +1126,30 @@ def test_a_limit_of_zero_returns_the_one_page_as_sent(mocked, client):
     }
 
 
-def test_v2_only_methods_reach_a_mocked_client():
-    client = MagicMock()
+def test_v2_only_methods_reach_a_mocked_v2_client():
+    client = MagicMock(api_version="v2")
 
     FUGAAsset(client, "a1").fetch_instrument_performers()
 
     client.get.assert_called_once_with("/assets/a1/instrument_performers")
+
+
+@pytest.mark.parametrize(
+    "client",
+    [MagicMock(), MagicMock(api_version=2), MagicMock(spec=["get"])],
+    ids=["mock-without-a-version", "non-string-version", "no-version-attribute"],
+)
+def test_v2_only_methods_refuse_a_client_that_is_not_v2(client):
+    resp = FUGAAsset(client, "a1").fetch_instrument_performers()
+
+    assert resp["success"] is False
+    assert "only available in FUGA API v2" in resp.get("error", {})["message"]
+    client.get.assert_not_called()
+
+
+def test_a_client_without_its_auth_hooks_cannot_be_built():
+    class NoAuthClient(BaseFUGAClient):
+        api_version = "v3"
+
+    with pytest.raises(TypeError, match="abstract"):
+        NoAuthClient(API_URL)  # type: ignore[abstract]

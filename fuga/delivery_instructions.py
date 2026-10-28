@@ -54,7 +54,7 @@ class FUGADeliveryInstructions(FUGAEntity):
     def fetch(self) -> FugaResponse:
         return self.client.get(self._base())
 
-    @requires_id
+    @requires_id("dsp_id")
     def fetch_dsp_history(self, dsp_id: int | str) -> FugaResponse:
         return self.client.get(f"{self._base()}/{dsp_id}/history")
 

@@ -2,7 +2,7 @@ from typing import Any
 
 from .api import BaseFUGAClient
 from .entity import paginate
-from .response import FugaResponse
+from .response import FugaResponse, error_response
 
 
 class FUGAMisc:
@@ -36,6 +36,8 @@ class FUGAMisc:
         return self.client.post("/miscellaneous/subgenres", data=subgenre_data)
 
     def delete_subgenre(self, subgenre_id: str) -> FugaResponse:
+        if not subgenre_id:
+            return error_response("subgenre_id is required")
         return self.client.delete(f"/miscellaneous/subgenres/{subgenre_id}")
 
     # ---- simple lookups ----

@@ -541,14 +541,15 @@ def test_upload_without_an_upload_id_fails(mocked, client, audio_file):
     }
 
 
-def test_upload_of_a_missing_file_fails(mocked, client, tmp_path):
-    mocked.post(f"{API_URL}/upload/start", json={"id": "upload-1"})
-
+def test_upload_of_a_missing_file_fails_before_starting_a_session(
+    mocked, client, tmp_path
+):
     resp = client.upload_file(str(tmp_path / "nope.wav"), {"id": "a", "type": "audio"})
 
     assert resp["success"] is False
     assert resp["status_code"] is None
     assert "nope.wav" in resp["error"]["message"]
+    assert len(mocked.calls) == 0
 
 
 def test_upload_stops_at_a_failed_chunk(mocked, client, audio_file):
@@ -664,6 +665,40 @@ def test_refused_re_login_after_a_401_returns_the_401(mocked):
 
 def test_login_without_a_cookie_raises(mocked):
     cookieless_login(mocked)
+
+    client = FUGAClient(API_URL, username="user", password="secret")
+    with pytest.raises(FUGAAuthError, match="set no session cookie"):
+        client.login()
+
+
+@pytest.mark.parametrize(
+    "set_cookies",
+    [
+        ["connect.sid=fresh; Path=/", "AWSALB=lb; Path=/"],
+        ["AWSALB=lb; Path=/", "connect.sid=fresh; Path=/"],
+    ],
+    ids=["session-first", "session-last"],
+)
+def test_login_keeps_the_session_cookie_among_others(mocked, set_cookies):
+    mocked.post(
+        f"{API_URL}/login",
+        json={"user": {"id": 7}},
+        headers=[("Set-Cookie", c) for c in set_cookies],
+    )
+
+    client = FUGAClient(API_URL, username="user", password="secret")
+    client.login()
+
+    assert client.auth_cookie == "connect.sid=fresh"
+    assert client.session.headers["Cookie"] == "connect.sid=fresh"
+
+
+def test_login_with_only_other_cookies_raises(mocked):
+    mocked.post(
+        f"{API_URL}/login",
+        json={"user": {"id": 7}},
+        headers={"Set-Cookie": "AWSALB=lb; Path=/"},
+    )
 
     client = FUGAClient(API_URL, username="user", password="secret")
     with pytest.raises(FUGAAuthError, match="set no session cookie"):

@@ -61,7 +61,7 @@ class FUGAArtist(FUGAEntity):
         """Fetch all identifiers for the artist."""
         return self.client.get(f"/artists/{self.artist_id}/identifier")
 
-    @requires_id
+    @requires_id("identifier_id")
     def fetch_identifier(self, identifier_id: str) -> FugaResponse:
         """Fetch a specific identifier for the artist."""
         return self.client.get(f"/artists/{self.artist_id}/identifier/{identifier_id}")
@@ -71,7 +71,7 @@ class FUGAArtist(FUGAEntity):
         """Create a new identifier for the artist."""
         return self.client.post(f"/artists/{self.artist_id}/identifier", data=data)
 
-    @requires_id
+    @requires_id("identifier_id")
     def update_identifier(
         self, identifier_id: str, data: dict[str, Any]
     ) -> FugaResponse:
@@ -80,7 +80,7 @@ class FUGAArtist(FUGAEntity):
             f"/artists/{self.artist_id}/identifier/{identifier_id}", data=data
         )
 
-    @requires_id
+    @requires_id("identifier_id")
     def delete_identifier(self, identifier_id: str) -> FugaResponse:
         """Delete a specific identifier for the artist."""
         return self.client.delete(

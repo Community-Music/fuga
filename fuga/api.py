@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import os
+from abc import ABC, abstractmethod
 from typing import Any
 
 import requests
@@ -14,6 +15,9 @@ from .response import FugaResponse, JSONBody, error_response
 DEFAULT_TIMEOUT = (10, 300)
 Timeout = float | tuple[float, float]
 
+# The v2 login sets this cookie, and every later request must send it.
+SESSION_COOKIE = "connect.sid"
+
 
 class FUGAAuthError(ValueError):
     """
@@ -23,20 +27,24 @@ class FUGAAuthError(ValueError):
     """
 
 
-class BaseFUGAClient:
+class BaseFUGAClient(ABC):
     """
     The HTTP layer shared by every FUGA API version.
 
-    Subclasses supply authentication through `_is_authenticated`,
-    `authenticate` and `_can_reauthenticate`. A request authenticates first if
-    it needs to, and on a 401 authenticates once more and retries when the
-    subclass can. Every request, login and upload chunks included, uses
-    `timeout`. Calls return a FugaResponse and never raise, with one exception:
-    if the login that `login()` or a client's first request makes is refused,
-    it raises FUGAAuthError. A refused re-login after a 401 returns the 401.
+    Subclasses supply authentication through `_is_authenticated` and
+    `authenticate`, which they must override, and `_can_reauthenticate`, which
+    they may. A subclass missing either of the first two can't be constructed.
+
+    A request authenticates first if it needs to, and on a 401 authenticates
+    once more and retries when the subclass can. Every request, login and
+    upload chunks included, uses `timeout`. Calls return a FugaResponse and
+    never raise, with one exception: if the login that `login()` or a client's
+    first request makes is refused, it raises FUGAAuthError. A refused re-login
+    after a 401 returns the 401.
     """
 
-    # "v2" or "v3", set by each subclass.
+    # "v2" or "v3", set by each subclass. v2-only methods refuse any client
+    # that doesn't set "v2".
     api_version: str
 
     def __init__(self, api_url: str, timeout: Timeout = DEFAULT_TIMEOUT) -> None:
@@ -45,11 +53,13 @@ class BaseFUGAClient:
         self.session = requests.Session()
 
     # ---- authentication, provided by subclasses ----
+    @abstractmethod
     def _is_authenticated(self) -> bool:
-        raise NotImplementedError
+        ...
 
+    @abstractmethod
     def authenticate(self) -> None:
-        raise NotImplementedError
+        ...
 
     def _can_reauthenticate(self) -> bool:
         return False
@@ -202,6 +212,13 @@ class BaseFUGAClient:
         Chunked upload to FUGA: /upload/start -> /upload (multipart chunks) -> /upload/finish
         `data` is the JSON you send to /upload/start, e.g. {"id": <asset_id>, "type": "audio", ...}
         """
+        # Check the file first, so a bad path doesn't leave an upload session open
+        file_name = os.path.basename(file_path)
+        try:
+            total_size = os.stat(file_path).st_size
+        except OSError as e:
+            return error_response(str(e))
+
         # 1) start session
         start = self.post("/upload/start", data=data)
         if not start["success"]:
@@ -211,12 +228,6 @@ class BaseFUGAClient:
         upload_id = session.get("id")
         if not upload_id:
             return error_response("Missing upload_id", start["status_code"])
-
-        file_name = os.path.basename(file_path)
-        try:
-            total_size = os.stat(file_path).st_size
-        except OSError as e:
-            return error_response(str(e))
 
         total_parts = math.ceil(total_size / chunk_size)
         md5 = hashlib.md5()
@@ -323,12 +334,12 @@ class FUGAClient(BaseFUGAClient):
         if resp.status_code != 200:
             raise FUGAAuthError(f"Login failed: {resp.status_code} {resp.text}")
 
-        cookie = None
-        for c in resp.cookies:
-            cookie = f"{c.name}={c.value}"
-        if cookie is None:
+        # The reply may set other cookies too, such as a load balancer's
+        session_id = resp.cookies.get(SESSION_COOKIE)
+        if not session_id:
             raise FUGAAuthError("Login succeeded but FUGA set no session cookie")
 
+        cookie = f"{SESSION_COOKIE}={session_id}"
         self.auth_cookie = cookie
         self.session.headers["Cookie"] = cookie
 

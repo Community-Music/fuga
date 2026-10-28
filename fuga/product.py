@@ -88,11 +88,11 @@ class FUGAProduct(FUGAEntity):
             data={"id": asset_id, "sequence": sequence},
         )
 
-    @requires_id
+    @requires_id("asset_id")
     def remove_asset(self, asset_id: str) -> FugaResponse:
         return self.client.delete(f"/products/{self.product_id}/assets/{asset_id}")
 
-    @requires_id
+    @requires_id("asset_id")
     def update_asset_sequence(self, asset_id: str, sequence: int) -> FugaResponse:
         endpoint = f"/products/{self.product_id}/assets/{asset_id}/position/{sequence}"
         return self.client.put(endpoint, data={})
