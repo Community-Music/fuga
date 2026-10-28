@@ -1,6 +1,0 @@
-# Include everything in the main package
-include fuga/*
-
-# Exclude the scripts folder entirely
-exclude scripts/*
-prune scripts

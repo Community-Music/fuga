@@ -1,94 +1,42 @@
-# python imports
-from typing import Optional, Dict, Any
+from typing import Any
 
-# local imports
-from .api import FUGAClient
+from .api import BaseFUGAClient
+from .entity import FUGAEntity, paginate, requires_id
+from .response import FugaResponse
 
 
-class FUGAArtist:
+class FUGAArtist(FUGAEntity):
     """
     Represents an artist in the FUGA API.
 
     Provides methods for CRUD operations and managing artist identifiers.
     """
 
-    def __init__(self, client: FUGAClient, artist_id: Optional[str] = None):
-        """
-        Initialize the FUGAArtist instance.
+    id_field = "artist_id"
 
-        Args:
-            client (FUGAClient): The FUGA API client.
-            artist_id (Optional[str]): The ID of the artist, if available.
-        """
-        self.client: FUGAClient = client
-        self.artist_id: Optional[str] = artist_id
+    def __init__(self, client: BaseFUGAClient, artist_id: str | None = None) -> None:
+        super().__init__(client)
+        self.artist_id = artist_id
 
-    def _need_id(self) -> Dict[str, Any]:
-        return {"success": False, "status_code": None, "error": {"message": "artist_id is required"}}
+    def fetch_list(
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> FugaResponse:
+        return paginate(
+            self.client,
+            "/artists",
+            "artist",
+            page=page,
+            page_size=page_size,
+            limit=limit,
+        )
 
-    def fetch_list(self, page: int = 0, page_size: int = 10, limit: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Return a dict with artists (possibly across multiple pages if limit is set).
-        Shape: {"success", "status_code", "data": {"artist": [...], "total": int, ...}} | {"success": False, "error": ...}
-        """
-        endpoint = "/artists"
-        params = {"page": page, "page_size": page_size}
-
-        # Single page if no limit requested
-        if not limit:
-            return self.client.get(endpoint, params=params)
-
-        # Aggregate up to `limit` across pages (still returns one dict)
-        collected = []
-        last_status = None
-        total = None
-        pages_fetched = 0
-
-        while True:
-            resp = self.client.get(endpoint, params=params)
-            last_status = resp.get("status_code")
-
-            if not resp.get("success"):
-                return resp  # bubble up error as-is
-
-            data = resp.get("data") or {}
-            items = data.get("artist") or []
-            total = data.get("total", total)
-
-            collected.extend(items)
-            pages_fetched += 1
-
-            if limit and len(collected) >= limit:
-                collected = collected[:limit]
-                break
-
-            if not items or (total is not None and len(collected) >= total):
-                break
-
-            params["page"] += 1
-
-        return {
-            "success": True,
-            "status_code": last_status,
-            "data": {
-                "artist": collected,
-                "total": total if total is not None else len(collected),
-                "pages_fetched": pages_fetched,
-                "limit_applied": bool(limit),
-            },
-        }
-
-
-    def fetch(self) -> Dict[str, Any]:
+    @requires_id
+    def fetch(self) -> FugaResponse:
         """Fetch a single artist's details from FUGA."""
-        if not self.artist_id:
-            return self._need_id()
+        return self.client.get(f"/artists/{self.artist_id}")
 
-        resp = self.client.get(f"/artists/{self.artist_id}")
-        return resp
-
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new artist in FUGA. """
+    def create(self, data: dict[str, Any]) -> FugaResponse:
+        """Create a new artist in FUGA."""
         resp = self.client.post("/artists", data=data)
 
         if resp["success"]:
@@ -98,46 +46,43 @@ class FUGAArtist:
 
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    @requires_id
+    def update(self, data: dict[str, Any]) -> FugaResponse:
         """Update an existing artist in FUGA."""
-        if not self.artist_id:
-            return self._need_id()
-
         return self.client.put(f"/artists/{self.artist_id}", data=data)
 
-    def delete(self) -> Dict[str, Any]:
+    @requires_id
+    def delete(self) -> FugaResponse:
         """Delete the artist from FUGA."""
-        if not self.artist_id:
-            return self._need_id()
-
         return self.client.delete(f"/artists/{self.artist_id}")
 
-    def fetch_identifiers(self) -> Dict[str, Any]:
+    @requires_id
+    def fetch_identifiers(self) -> FugaResponse:
         """Fetch all identifiers for the artist."""
-        if not self.artist_id:
-            return self._need_id()
         return self.client.get(f"/artists/{self.artist_id}/identifier")
 
-    def fetch_identifier(self, identifier_id: str) -> Dict[str, Any]:
+    @requires_id("identifier_id")
+    def fetch_identifier(self, identifier_id: str) -> FugaResponse:
         """Fetch a specific identifier for the artist."""
-        if not self.artist_id:
-            return self._need_id()
         return self.client.get(f"/artists/{self.artist_id}/identifier/{identifier_id}")
 
-    def create_identifier(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    @requires_id
+    def create_identifier(self, data: dict[str, Any]) -> FugaResponse:
         """Create a new identifier for the artist."""
-        if not self.artist_id:
-            return self._need_id()
         return self.client.post(f"/artists/{self.artist_id}/identifier", data=data)
 
-    def update_identifier(self, identifier_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    @requires_id("identifier_id")
+    def update_identifier(
+        self, identifier_id: str, data: dict[str, Any]
+    ) -> FugaResponse:
         """Update an existing identifier for the artist."""
-        if not self.artist_id:
-            return self._need_id()
-        return self.client.put(f"/artists/{self.artist_id}/identifier/{identifier_id}", data=data)
+        return self.client.put(
+            f"/artists/{self.artist_id}/identifier/{identifier_id}", data=data
+        )
 
-    def delete_identifier(self, identifier_id: str) -> Dict[str, Any]:
+    @requires_id("identifier_id")
+    def delete_identifier(self, identifier_id: str) -> FugaResponse:
         """Delete a specific identifier for the artist."""
-        if not self.artist_id:
-            return self._need_id()
-        return self.client.delete(f"/artists/{self.artist_id}/identifier/{identifier_id}")
+        return self.client.delete(
+            f"/artists/{self.artist_id}/identifier/{identifier_id}"
+        )

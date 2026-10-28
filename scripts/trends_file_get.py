@@ -1,14 +1,15 @@
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
 import os
+from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
 
 from fuga.api import FUGAClient
-from fuga.trends import trends_files_get
+from fuga.trends import FUGATrends
 
 load_dotenv()
 
-USERNAME = os.getenv("USERNAME")
-PASSWORD = os.getenv("PASSWORD")
+USERNAME = os.getenv("FUGA_USERNAME")
+PASSWORD = os.getenv("FUGA_PASSWORD")
 
 api = FUGAClient(
     api_url="https://next.fugamusic.com/api/v2",
@@ -27,5 +28,5 @@ print(f"Updated since epoch (ms)= {updated_since}")
 params = {
     "updated_since": updated_since,  # IMPORTANT: int milliseconds
 }
-res = trends_files_get(api, params=params)
+res = FUGATrends(api).trends_files_get(params=params)
 print(f"Res= {res}")

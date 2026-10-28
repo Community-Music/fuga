@@ -1,4 +1,5 @@
 import os
+
 from dotenv import load_dotenv
 
 from fuga.api import FUGAClient
@@ -6,8 +7,8 @@ from fuga.asset import FUGAAsset
 
 load_dotenv()
 
-USERNAME = os.getenv("USERNAME")
-PASSWORD = os.getenv("PASSWORD")
+USERNAME = os.getenv("FUGA_USERNAME")
+PASSWORD = os.getenv("FUGA_PASSWORD")
 
 # Fill these in before running
 ASSET_ID = "1009137292596"

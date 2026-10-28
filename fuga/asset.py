@@ -1,8 +1,11 @@
-from typing import Optional, Dict, Any
-from .api import FUGAClient
+from typing import Any
+
+from .api import BaseFUGAClient
+from .entity import FUGAEntity, paginate, requires_id, v2_only
+from .response import FugaResponse
 
 
-class FUGAAsset:
+class FUGAAsset(FUGAEntity):
     """
     Represents an asset in the FUGA API.
 
@@ -10,72 +13,28 @@ class FUGAAsset:
     like contributors, instrument performers, publishers, and media uploads.
     """
 
-    def __init__(self, client: FUGAClient, asset_id: Optional[str] = None):
-        self.client = client
-        self.asset_id = asset_id
+    id_field = "asset_id"
 
-    def _need_id(self) -> Dict[str, Any]:
-        return {
-            "success": False,
-            "status_code": None,
-            "error": {"message": "asset_id is required"},
-        }
+    def __init__(self, client: BaseFUGAClient, asset_id: str | None = None) -> None:
+        super().__init__(client)
+        self.asset_id = asset_id
 
     # --- list/fetch ---
     def fetch_list(
-        self, page: int = 0, page_size: int = 10, limit: Optional[int] = None
-    ) -> Dict[str, Any]:
-        endpoint = "/assets"
-        params = {"page": page, "page_size": page_size}
+        self, page: int = 0, page_size: int = 10, limit: int | None = None
+    ) -> FugaResponse:
+        return paginate(
+            self.client, "/assets", "asset", page=page, page_size=page_size, limit=limit
+        )
 
-        if not limit:
-            return self.client.get(endpoint, params=params)
-
-        collected, last_status, total, pages_fetched = [], None, None, 0
-
-        while True:
-            resp = self.client.get(endpoint, params=params)
-            last_status = resp.get("status_code")
-
-            if not resp.get("success"):
-                return resp
-
-            data = resp.get("data") or {}
-            items = data.get("asset") or []
-            total = data.get("total", total)
-
-            collected.extend(items)
-            pages_fetched += 1
-
-            if limit and len(collected) >= limit:
-                collected = collected[:limit]
-                break
-
-            if not items or (total is not None and len(collected) >= total):
-                break
-
-            params["page"] += 1
-
-        return {
-            "success": True,
-            "status_code": last_status,
-            "data": {
-                "asset": collected,
-                "total": total if total is not None else len(collected),
-                "pages_fetched": pages_fetched,
-                "limit_applied": bool(limit),
-            },
-        }
-
-    def fetch(self) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def fetch(self) -> FugaResponse:
         return self.client.get(f"/assets/{self.asset_id}")
 
     # --- crud ---
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> FugaResponse:
         resp = self.client.post("/assets", data=data)
-        if not resp.get("success"):
+        if not resp["success"]:
             return resp
 
         payload = resp.get("data")
@@ -94,100 +53,53 @@ class FUGAAsset:
             self.asset_id = asset_id
         return resp
 
-    def update(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def update(self, data: dict[str, Any]) -> FugaResponse:
         return self.client.put(f"/assets/{self.asset_id}", data=data)
 
-    def attach_to_product(
-        self, product_id: str, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
-        if not product_id:
-            return {
-                "success": False,
-                "status_code": None,
-                "error": {"message": "product_id is required"},
-            }
+    @requires_id("product_id")
+    def attach_to_product(self, product_id: str, data: dict[str, Any]) -> FugaResponse:
         return self.client.put(
             f"/products/{product_id}/assets/{self.asset_id}", data=data
         )
 
-    def delete(self) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def delete(self) -> FugaResponse:
         return self.client.delete(f"/assets/{self.asset_id}")
 
     # --- roles ---
-    def fetch_roles(self) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def fetch_roles(self) -> FugaResponse:
         return self.client.get(f"/assets/{self.asset_id}/contributors")
 
-    def add_role(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def add_role(self, data: dict[str, Any]) -> FugaResponse:
         return self.client.post(f"/assets/{self.asset_id}/contributors", data=data)
 
-    def remove_role(self, contributor_id: str) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
-        return self.client.delete(
-            f"/assets/{self.asset_id}/contributors/{contributor_id}"
-        )
-
-    # --- instrument performers ---
-    def fetch_instrument_performers(self) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
-        return self.client.get(f"/assets/{self.asset_id}/instrument_performers")
-
-    def add_instrument_performer(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
-        return self.client.post(
-            f"/assets/{self.asset_id}/instrument_performers", data=data
-        )
-
-    def remove_instrument_performer(
-        self, instrument_performer_id: str
-    ) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
-        return self.client.delete(
-            f"/assets/{self.asset_id}/instrument_performers/{instrument_performer_id}"
-        )
-
     # --- publishers ---
-    def fetch_publishers(self) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def fetch_publishers(self) -> FugaResponse:
         return self.client.get(f"/assets/{self.asset_id}/publishers")
 
-    def add_publisher(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def add_publisher(self, data: dict[str, Any]) -> FugaResponse:
         return self.client.post(f"/assets/{self.asset_id}/publishers", data=data)
 
-    def remove_publisher(self, publisher_id: str) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id("publisher_id")
+    def remove_publisher(self, publisher_id: str) -> FugaResponse:
         return self.client.delete(f"/assets/{self.asset_id}/publishers/{publisher_id}")
 
     # --- media ---
-    def fetch_audio(self, original: bool = True) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def fetch_audio(self, original: bool = True) -> FugaResponse:
         return self.client.get_binary(
             f"/assets/{self.asset_id}/audio", params={"original": original}
         )
 
+    @requires_id
     def upload_audio(
         self, audio_path: str, is_apple_digital_master: bool = False
-    ) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    ) -> FugaResponse:
         data = {
             "id": self.asset_id,
             "type": "audio",
@@ -198,17 +110,43 @@ class FUGAAsset:
             data["original_encoding"] = "ADM"
         return self.client.upload_file(audio_path, data)
 
-    def upload_video(self, video_path: str) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    @requires_id
+    def upload_video(self, video_path: str) -> FugaResponse:
         data = {"id": self.asset_id, "type": "video"}
         # video chunks can be bigger; 6MB is fine (tweak if needed)
         return self.client.upload_file(video_path, data, chunk_size=6 * 1024 * 1024)
 
+    @requires_id
     def upload_video_preview_image(
         self, video_preview_image_id: str, image_path: str
-    ) -> Dict[str, Any]:
-        if not self.asset_id:
-            return self._need_id()
+    ) -> FugaResponse:
         data = {"id": video_preview_image_id, "type": "image_preview_image"}
         return self.client.upload_file(image_path, data)
+
+    # --- v2 only: FUGA removed these in API v3 ---
+    @v2_only
+    @requires_id("contributor_id")
+    def remove_role(self, contributor_id: str) -> FugaResponse:
+        """Removes a contributor entry by its entry id; v3 removes by person id."""
+        return self.client.delete(
+            f"/assets/{self.asset_id}/contributors/{contributor_id}"
+        )
+
+    @v2_only
+    @requires_id
+    def fetch_instrument_performers(self) -> FugaResponse:
+        return self.client.get(f"/assets/{self.asset_id}/instrument_performers")
+
+    @v2_only
+    @requires_id
+    def add_instrument_performer(self, data: dict[str, Any]) -> FugaResponse:
+        return self.client.post(
+            f"/assets/{self.asset_id}/instrument_performers", data=data
+        )
+
+    @v2_only
+    @requires_id("instrument_performer_id")
+    def remove_instrument_performer(self, instrument_performer_id: str) -> FugaResponse:
+        return self.client.delete(
+            f"/assets/{self.asset_id}/instrument_performers/{instrument_performer_id}"
+        )

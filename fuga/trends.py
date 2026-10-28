@@ -1,17 +1,21 @@
-from typing import Optional, Dict, Any, List, Iterable, Union
-from .api import FUGAClient
+from collections.abc import Iterable
+from typing import Any, ClassVar
 
+from .api import BaseFUGAClient
+from .response import FugaResponse, error_response
 
 SelectionType = str  # "dsp" | "territory" | "label" | "product" | "asset"
 SaleType = str  # "stream" | "download"
 
 
-def _normalize_asset_ids(value: Union[None, str, int, Iterable[Union[str, int]]]):
+def _normalize_asset_ids(
+    value: None | str | int | Iterable[str | int],
+) -> list[str] | None:
     if value is None:
         return None
     if isinstance(value, (str, int)):
         return [str(value)]
-    # list/tuple/set etc.
+    # any iterable: list, tuple, set, range, generator, queryset
     return [str(v) for v in value]
 
 
@@ -26,33 +30,28 @@ class FUGATrends:
     - fetch_totals: GET /trends/totals
       "Get total streams AND downloads and their performance"
       Requires: selection_type, start_date, end_date (no sale_type)
-
-    - fetch_entities: GET /trends
-      "Get entities that have trends in a range (and their counts/performance)"
-      Requires: selection_type, sale_type, start_date, end_date
-      Supports offset/size pagination; optional `limit` to aggregate results.
     """
 
-    _SELECTION_ALLOWED = {"dsp", "territory", "label", "product", "asset"}
-    _SALE_ALLOWED = {"stream", "download"}
+    _SELECTION_ALLOWED: ClassVar[frozenset[str]] = frozenset(
+        {"dsp", "territory", "label", "product", "asset"}
+    )
+    _SALE_ALLOWED: ClassVar[frozenset[str]] = frozenset({"stream", "download"})
 
-    def __init__(self, client: FUGAClient):
+    def __init__(self, client: BaseFUGAClient) -> None:
         self.client = client
 
     # ----- helpers -----
-    def _bad_arg(self, message: str) -> Dict[str, Any]:
-        return {"success": False, "status_code": None, "error": {"message": message}}
+    def _bad_arg(self, message: str) -> FugaResponse:
+        return error_response(message)
 
-    def _validate_selection(
-        self, selection_type: SelectionType
-    ) -> Optional[Dict[str, Any]]:
+    def _validate_selection(self, selection_type: SelectionType) -> FugaResponse | None:
         if selection_type not in self._SELECTION_ALLOWED:
             return self._bad_arg(
                 f"selection_type must be one of {sorted(self._SELECTION_ALLOWED)}"
             )
         return None
 
-    def _validate_sale(self, sale_type: SaleType) -> Optional[Dict[str, Any]]:
+    def _validate_sale(self, sale_type: SaleType) -> FugaResponse | None:
         if sale_type not in self._SALE_ALLOWED:
             return self._bad_arg(
                 f"sale_type must be one of {sorted(self._SALE_ALLOWED)}"
@@ -60,19 +59,15 @@ class FUGATrends:
         return None
 
     @staticmethod
-    def _clean_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    def _clean_params(params: dict[str, Any]) -> dict[str, Any]:
         """Drop None values and coerce asset_ids to a list if present."""
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in params.items():
             if v is None:
                 continue
             if k == "asset_ids":
-                # Accept anything iterable (list/tuple/set), keep as list so `requests` repeats the param.
-                if isinstance(v, (list, tuple, set)):
-                    out[k] = [str(x) for x in v]
-                else:
-                    # single value fallback
-                    out[k] = [str(v)]
+                # A list, so `requests` repeats the param
+                out[k] = _normalize_asset_ids(v)
             else:
                 out[k] = v
         return out
@@ -85,14 +80,14 @@ class FUGATrends:
         end_date: str,
         sale_type: SaleType = "stream",
         *,
-        product_id: Optional[int] = None,
-        artist_id: Optional[int] = None,
-        asset_id: Optional[int] = None,
-        asset_ids: Optional[Iterable[Union[int, str]]] = None,
-        release_project_id: Optional[int] = None,
-        territory_id: Optional[str] = None,
-        dsp_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        product_id: int | None = None,
+        artist_id: int | None = None,
+        asset_id: int | None = None,
+        asset_ids: Iterable[int | str] | None = None,
+        release_project_id: int | None = None,
+        territory_id: str | None = None,
+        dsp_id: int | None = None,
+    ) -> FugaResponse:
         """
         GET /trends/chart
 
@@ -126,7 +121,7 @@ class FUGATrends:
         start_date: str,
         end_date: str,
         **filters: Any,
-    ) -> Dict[str, Any]:
+    ) -> FugaResponse:
         """
         GET /trends/totals
 
@@ -160,113 +155,7 @@ class FUGATrends:
 
         return self.client.get("/trends/totals", params=params)
 
-    # ----- /trends (entities with pagination: offset/size) -----
-    def fetch_entities(
-        self,
-        selection_type: SelectionType,
-        start_date: str,
-        end_date: str,
-        sale_type: SaleType = "stream",
-        *,
-        offset: int = 0,
-        size: int = 10,
-        limit: Optional[int] = None,
-        product_id: Optional[int] = None,
-        artist_id: Optional[int] = None,
-        asset_id: Optional[int] = None,
-        asset_ids: Optional[Iterable[Union[int, str]]] = None,
-        release_project_id: Optional[int] = None,
-        territory_id: Optional[str] = None,
-        dsp_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """
-        GET /trends
-
-        Returns an array of entities (assets/products/dsps/labels/territories) that have trends,
-        including their counts and performance percentages.
-
-        If `limit` is provided, fetches multiple windows using offset/size until `limit` items collected.
-        Aggregated success payload shape:
-          {"success": True, "status_code": <last_code>, "data": {"items": [...], "windows_fetched": N, "limit_applied": True/False}}
-        """
-        bad = self._validate_selection(selection_type) or self._validate_sale(sale_type)
-        if bad:
-            return bad
-
-        base_params = self._clean_params(
-            {
-                "selection_type": selection_type,
-                "sale_type": sale_type,
-                "start_date": start_date,
-                "end_date": end_date,
-                "product_id": product_id,
-                "artist_id": artist_id,
-                "asset_id": asset_id,
-                "asset_ids": asset_ids,
-                "release_project_id": release_project_id,
-                "territory_id": territory_id,
-                "dsp_id": dsp_id,
-            }
-        )
-
-        # Single window (no aggregation)
-        if limit is None:
-            params = {**base_params, "offset": offset, "size": size}
-            return self.client.get("/trends", params=params)
-
-        # Aggregate multiple windows
-        collected: List[Dict[str, Any]] = []
-        windows = 0
-        last_status = None
-        cur_offset = int(offset)
-        sz = int(size) if size and size > 0 else 10
-
-        while True:
-            params = {**base_params, "offset": cur_offset, "size": sz}
-            resp = self.client.get("/trends", params=params)
-            last_status = resp.get("status_code")
-
-            if not resp.get("success"):
-                return resp
-
-            payload = resp.get("data")
-            # API says the response is an *array* of entries; be flexible just in case
-            if isinstance(payload, list):
-                items = payload
-            elif (
-                isinstance(payload, dict)
-                and "data" in payload
-                and isinstance(payload["data"], list)
-            ):
-                items = payload["data"]
-            else:
-                items = []
-
-            if not items:
-                break
-
-            collected.extend(items)
-            windows += 1
-
-            if len(collected) >= limit:
-                collected = collected[:limit]
-                break
-
-            cur_offset += sz
-
-        return {
-            "success": True,
-            "status_code": last_status,
-            "data": {
-                "items": collected,
-                "windows_fetched": windows,
-                "limit_applied": True,
-            },
-        }
-
-    def trends_files_get(
-        self, params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def trends_files_get(self, params: dict[str, Any] | None = None) -> FugaResponse:
         """
         GET /trends_file_reports
         Fetch trends file reports with optional query parameters.

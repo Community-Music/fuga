@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fuga"
+version = "1.5.0"
+description = "A Python client for interacting with the FUGA API."
+readme = "README.md"
+authors = [{ name = "LANKS", email = "will.cuming@unifiedmusicgroup.com" }]
+requires-python = ">=3.10"
+dependencies = ["requests>=2.32.3"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0", "responses>=0.25", "python-dotenv>=1.0"]
+
+[project.urls]
+Repository = "https://github.com/Community-Music/fuga"
+
+[tool.setuptools.packages.find]
+include = ["fuga*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"] # Black handles line length
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 88

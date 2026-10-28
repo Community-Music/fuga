@@ -1,72 +1,60 @@
 # FUGA Catalog API
 
-This package contains all the functions necessary for connecting to FUGA's Catalog API. It provides a set of tools to interact with the API and retrieve data related to music catalogs.
-
-## Getting Started
-
-To run files in this package, use the following command:
-
-```zsh
-python -m scripts.product_test
-```
-
-## Features
-
-- Connect to FUGA's Catalog API
-- Retrieve and manage catalog data
-- Example scripts for common tasks
+A Python client for FUGA's Catalog API: products, assets, artists, labels, people, publishing houses, delivery instructions, trends and uploads.
 
 ## Requirements
 
-- Python 3.x
-- Necessary dependencies (listed in `requirements.txt`)
+- Python 3.10 or later
+- `requests`
 
 ## Installation
 
-1. Clone the repository:
-   ```zsh
-   git clone https://github.com/will-unified/fuga.git
-   ```
-2. Navigate to the project directory:
-   ```zsh
-   cd fuga
-   ```
-3. Install the required dependencies:
-   ```zsh
-   pip install -r requirements.txt
-   ```
+In another project, pin a release tag:
+
+```zsh
+pip install "git+https://github.com/Community-Music/fuga.git@v1.5.0#egg=fuga"
+```
+
+To work on the package itself:
+
+```zsh
+git clone https://github.com/Community-Music/fuga.git
+cd fuga
+pip install -e ".[dev]"
+```
 
 ## Usage
 
-To use the functions provided by this package, import the necessary module classes in your Python scripts and call their methods as needed.
-
-Example:
-
 ```python
 from fuga.api import FUGAClient
-from fuga.products import FUGAProduct
+from fuga.product import FUGAProduct
 
-# Initialize the client
-client = FUGAClient(API_URL, USERNAME, PASSWORD, auth_cookie)  # auth_cookie is optional
-client.login()
+# Logs in on the first request. Pass auth_cookie instead to reuse a session.
+client = FUGAClient(API_URL, username=USERNAME, password=PASSWORD)
 
-# Initialize the Product
 product = FUGAProduct(client)
+response = product.create({"name": "New Album", "release_date": "2024-12-31"})
 
-# Create the product in FUGA
-data = {"name": "New Album", "release_date": "2024-12-31"}
-response = product.create(product_data)
-print("Created Product:", response)
+if response["success"]:
+    print("Created product", product.product_id)
+else:
+    print("FUGA returned", response["status_code"], response["error"])
+```
+
+Every call returns a dict with `success` and `status_code`, plus `data` on success or `error` on failure; `status_code` is `None` when the request never reached FUGA. Calls don't raise, with one exception: if FUGA refuses the login made by `login()` or by a client's first request, that raises `fuga.api.FUGAAuthError`. When FUGA rejects a session partway through, the client logs in once more and retries; if that login is refused too, the call returns FUGA's 401.
+
+## Example scripts
+
+The scripts in `scripts/` read `FUGA_USERNAME` and `FUGA_PASSWORD` from a `.env` file. Fill in the ids at the top of a script, then run it from the repository root:
+
+```zsh
+python -m scripts.delivery_instructions_fetch
 ```
 
 ## Tests
 
-To run test suite:
-
-```
-pytest -q
+```zsh
+pytest
 ```
 
-## Acknowledgments
-
-- FUGA for providing the API
+The tests mock every HTTP call, so they need no FUGA account and make no network requests.
