@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fuga"
-version = "1.4.0"
+version = "1.5.0"
 description = "A Python client for interacting with the FUGA API."
 readme = "README.md"
 authors = [{ name = "LANKS", email = "will.cuming@unifiedmusicgroup.com" }]

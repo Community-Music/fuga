@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from responses import matchers
@@ -951,3 +952,54 @@ def test_subgenres_return_a_failed_page(mocked, client):
     resp = FUGAMisc(client).fetch_subgenres()
 
     assert resp == {"success": False, "status_code": 500, "error": {"code": "BOOM"}}
+
+
+# ---- audit follow-ups: pagination start page, limit=0, mocked clients ----
+
+
+def test_every_page_counts_pages_before_the_start(mocked, client):
+    last = [{"id": f"S{i}"} for i in range(50, 65)]
+    mocked.get(
+        f"{API_URL}{SUBGENRES}",
+        json={"subgenre": last, "total": 65},
+        match=[matchers.query_param_matcher({"page": "1", "page_size": "50"})],
+    )
+
+    resp = FUGAMisc(client).fetch_subgenres(page=1)
+
+    assert resp["success"] is True
+    assert resp.get("data", {})["subgenre"] == last
+    assert resp.get("data", {})["pages_fetched"] == 1
+
+
+def test_limit_counts_pages_before_the_start(mocked, client):
+    mocked.get(
+        f"{API_URL}/labels",
+        json={"label": [3, 4], "total": 4},
+        match=[matchers.query_param_matcher({"page": "1", "page_size": "2"})],
+    )
+
+    resp = FUGALabel(client).fetch_list(page=1, page_size=2, limit=10)
+
+    assert resp.get("data", {})["label"] == [3, 4]
+    assert resp.get("data", {})["pages_fetched"] == 1
+
+
+def test_a_limit_of_zero_returns_the_one_page_as_sent(mocked, client):
+    mocked.get(f"{API_URL}/labels", json={"label": [1], "total": 5})
+
+    resp = FUGALabel(client).fetch_list(limit=0)
+
+    assert resp == {
+        "success": True,
+        "status_code": 200,
+        "data": {"label": [1], "total": 5},
+    }
+
+
+def test_v2_only_methods_reach_a_mocked_client():
+    client = MagicMock()
+
+    FUGAAsset(client, "a1").fetch_instrument_performers()
+
+    client.get.assert_called_once_with("/assets/a1/instrument_performers")

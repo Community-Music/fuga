@@ -12,7 +12,7 @@ A Python client for FUGA's Catalog API: products, assets, artists, labels, peopl
 In another project, pin a release tag:
 
 ```zsh
-pip install "git+https://github.com/Community-Music/fuga.git@v1.4.0#egg=fuga"
+pip install "git+https://github.com/Community-Music/fuga.git@v1.5.0#egg=fuga"
 ```
 
 To work on the package itself:
@@ -41,7 +41,7 @@ else:
     print("FUGA returned", response["status_code"], response["error"])
 ```
 
-Every call returns a dict with `success` and `status_code`, plus `data` on success or `error` on failure; `status_code` is `None` when the request never reached FUGA. Calls don't raise, except that a refused login raises `fuga.api.FUGAAuthError`.
+Every call returns a dict with `success` and `status_code`, plus `data` on success or `error` on failure; `status_code` is `None` when the request never reached FUGA. Calls don't raise, with one exception: if FUGA refuses the login made by `login()` or by a client's first request, that raises `fuga.api.FUGAAuthError`. When FUGA rejects a session partway through, the client logs in once more and retries; if that login is refused too, the call returns FUGA's 401.
 
 ## Example scripts
 

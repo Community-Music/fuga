@@ -1,4 +1,5 @@
 import hashlib
+import re
 
 import pytest
 import requests
@@ -7,6 +8,18 @@ from responses import matchers
 from fuga.api import DEFAULT_TIMEOUT, FUGAAuthError, FUGAClient
 
 from .conftest import API_URL, COOKIE
+
+
+def multipart_field(body: bytes, name: str) -> bytes:
+    """The value of one field in a multipart/form-data body."""
+    match = re.search(
+        rb'name="' + name.encode() + rb'"(?:; filename="[^"]*")?\r\n'
+        rb"(?:Content-Type: [^\r]*\r\n)?\r\n(.*?)\r\n--",
+        body,
+        re.DOTALL,
+    )
+    assert match, f"no {name} field in the multipart body"
+    return match.group(1)
 
 
 def login_response(mocked, status=200, cookie="connect.sid=fresh"):
@@ -433,6 +446,12 @@ def test_upload_sends_start_chunks_and_finish(mocked, client, audio_file):
         assert b'name="totalparts"\r\n\r\n3' in body
         assert b'name="file"; filename="blob"' in body
 
+    payloads = [multipart_field(r.body, "file") for r in chunk_requests]
+    offsets = [multipart_field(r.body, "partbyteoffset") for r in chunk_requests]
+    assert payloads == [b"abcd", b"efgh", b"ij"]
+    assert offsets == [b"0", b"4", b"8"]
+    assert b"".join(payloads) == audio_file.read_bytes()
+
     md5 = hashlib.md5(b"abcdefghij").hexdigest()
     assert finish.call_count == 1
     assert mocked.calls[-1].request.body == (
@@ -618,3 +637,126 @@ def test_a_timed_out_upload_chunk_is_returned(mocked, client, audio_file):
         "status_code": None,
         "error": {"message": "read timed out"},
     }
+
+
+# ---- refused and cookieless logins (audit items 1 and 3) ----
+
+
+def cookieless_login(mocked):
+    """A 200 login reply with no Set-Cookie header."""
+    return mocked.post(f"{API_URL}/login", json={"user": {"id": 7}})
+
+
+def test_refused_re_login_after_a_401_returns_the_401(mocked):
+    login = mocked.post(f"{API_URL}/login", json={"code": "AUTH"}, status=401)
+    mocked.get(f"{API_URL}/labels", json={"code": "NOT_LOGGED_IN"}, status=401)
+
+    client = FUGAClient(API_URL, username="user", password="secret", auth_cookie=COOKIE)
+    resp = client.get("/labels")
+
+    assert resp == {
+        "success": False,
+        "status_code": 401,
+        "error": {"code": "NOT_LOGGED_IN"},
+    }
+    assert login.call_count == 1
+
+
+def test_login_without_a_cookie_raises(mocked):
+    cookieless_login(mocked)
+
+    client = FUGAClient(API_URL, username="user", password="secret")
+    with pytest.raises(FUGAAuthError, match="set no session cookie"):
+        client.login()
+
+
+def test_first_request_after_a_cookieless_login_raises_once(mocked):
+    login = cookieless_login(mocked)
+
+    client = FUGAClient(API_URL, username="user", password="secret")
+    with pytest.raises(FUGAAuthError):
+        client.get("/labels")
+
+    assert login.call_count == 1
+
+
+def test_cookieless_re_login_after_a_401_returns_the_401(mocked):
+    cookieless_login(mocked)
+    mocked.get(f"{API_URL}/labels", json={"code": "NOT_LOGGED_IN"}, status=401)
+
+    client = FUGAClient(API_URL, username="user", password="secret", auth_cookie=COOKIE)
+    resp = client.get("/labels")
+
+    assert resp["status_code"] == 401
+    assert client.auth_cookie == COOKIE
+
+
+def test_network_failure_during_the_first_login_is_returned(mocked):
+    mocked.post(f"{API_URL}/login", body=requests.ConnectionError("refused"))
+
+    client = FUGAClient(API_URL, username="user", password="secret")
+
+    assert client.get("/labels") == {
+        "success": False,
+        "status_code": None,
+        "error": {"message": "refused"},
+    }
+
+
+# ---- 401 re-login on binary reads and upload start ----
+
+
+def test_get_binary_logs_in_again_on_a_401(mocked):
+    login = login_response(mocked)
+    mocked.get(
+        f"{API_URL}/assets/1/audio",
+        json={"code": "NOT_LOGGED_IN"},
+        status=401,
+        match=[matchers.header_matcher({"Cookie": COOKIE})],
+    )
+    mocked.get(
+        f"{API_URL}/assets/1/audio",
+        body=b"RIFF",
+        match=[matchers.header_matcher({"Cookie": "connect.sid=fresh"})],
+    )
+
+    client = FUGAClient(API_URL, username="user", password="secret", auth_cookie=COOKIE)
+    resp = client.get_binary("/assets/1/audio")
+
+    assert resp["success"] is True
+    assert resp.get("data") == b"RIFF"
+    assert login.call_count == 1
+
+
+def test_upload_start_logs_in_again_on_a_401(mocked, audio_file):
+    login = login_response(mocked)
+    mocked.post(
+        f"{API_URL}/upload/start",
+        json={"code": "NOT_LOGGED_IN"},
+        status=401,
+        match=[matchers.header_matcher({"Cookie": COOKIE})],
+    )
+    mocked.post(
+        f"{API_URL}/upload/start",
+        json={"id": "upload-1"},
+        match=[matchers.header_matcher({"Cookie": "connect.sid=fresh"})],
+    )
+    mocked.post(f"{API_URL}/upload", body="ok")
+    mocked.post(f"{API_URL}/upload/finish", json=True)
+
+    client = FUGAClient(API_URL, username="user", password="secret", auth_cookie=COOKIE)
+    resp = client.upload_file(
+        str(audio_file), {"id": "asset-1", "type": "audio"}, chunk_size=100
+    )
+
+    assert resp["success"] is True
+    assert login.call_count == 1
+
+
+def test_a_single_number_timeout_is_passed_through(mocked):
+    mocked.get(f"{API_URL}/labels", json={})
+
+    client = FUGAClient(API_URL, auth_cookie=COOKIE, timeout=30)
+    client.get("/labels")
+
+    assert mocked.calls[0].request.req_kwargs["timeout"] == 30

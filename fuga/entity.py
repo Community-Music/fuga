@@ -39,14 +39,16 @@ def requires_id(method: EntityMethod[E, P]) -> EntityMethod[E, P]:
 
 def v2_only(method: EntityMethod[E, P]) -> EntityMethod[E, P]:
     """
-    For endpoints FUGA removed in API v3. Through any other client version the
-    call fails here instead of reaching FUGA. Remove these methods in fuga 2.0.0.
+    For endpoints FUGA removed in API v3. Through a client of another version
+    the call fails here instead of reaching FUGA. A client without a string
+    version, such as a test mock, is let through. Remove these methods in
+    fuga 2.0.0.
     """
 
     @functools.wraps(method)
     def wrapper(self: E, *args: P.args, **kwargs: P.kwargs) -> FugaResponse:
         version = self.client.api_version
-        if version != "v2":
+        if isinstance(version, str) and version != "v2":
             return error_response(
                 f"{method.__name__} is only available in FUGA API v2, not {version}"
             )
@@ -76,6 +78,8 @@ def paginate(
     if not limit and not every_page:
         return client.get(endpoint, params=params)
 
+    # FUGA's total counts every item, including those on pages before `page`.
+    skipped = page * page_size
     collected: list[Any] = []
     last_status: int | None = None
     total = None
@@ -99,7 +103,7 @@ def paginate(
             collected = collected[:limit]
             break
 
-        if not items or (total is not None and len(collected) >= total):
+        if not items or (total is not None and skipped + len(collected) >= total):
             break
 
         params["page"] += 1

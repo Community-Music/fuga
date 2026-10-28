@@ -31,8 +31,9 @@ class BaseFUGAClient:
     `authenticate` and `_can_reauthenticate`. A request authenticates first if
     it needs to, and on a 401 authenticates once more and retries when the
     subclass can. Every request, login and upload chunks included, uses
-    `timeout`. Calls return a FugaResponse and never raise, except that a
-    refused login raises FUGAAuthError.
+    `timeout`. Calls return a FugaResponse and never raise, with one exception:
+    if the login that `login()` or a client's first request makes is refused,
+    it raises FUGAAuthError. A refused re-login after a 401 returns the 401.
     """
 
     # "v2" or "v3", set by each subclass.
@@ -59,7 +60,11 @@ class BaseFUGAClient:
         url = f"{self.api_url}{endpoint}"
         resp = self.session.request(method, url, timeout=self.timeout, **kwargs)
         if resp.status_code == 401 and self._can_reauthenticate():
-            self.authenticate()
+            try:
+                self.authenticate()
+            except FUGAAuthError:
+                # The caller gets FUGA's 401 to act on, as before re-login existed
+                return resp
             resp = self.session.request(method, url, timeout=self.timeout, **kwargs)
         return resp
 
@@ -318,9 +323,14 @@ class FUGAClient(BaseFUGAClient):
         if resp.status_code != 200:
             raise FUGAAuthError(f"Login failed: {resp.status_code} {resp.text}")
 
+        cookie = None
         for c in resp.cookies:
-            self.auth_cookie = f"{c.name}={c.value}"
-            self.session.headers["Cookie"] = self.auth_cookie
+            cookie = f"{c.name}={c.value}"
+        if cookie is None:
+            raise FUGAAuthError("Login succeeded but FUGA set no session cookie")
+
+        self.auth_cookie = cookie
+        self.session.headers["Cookie"] = cookie
 
     def _is_authenticated(self) -> bool:
         return bool(self.auth_cookie)
