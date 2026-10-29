@@ -15,6 +15,7 @@ from fuga.api import (
     TOKEN_REQUEST_TIMEOUT,
     FUGAAuthError,
     FUGAV3Client,
+    FUGAV3TokenClient,
     MemoryTokenStore,
 )
 
@@ -1069,3 +1070,107 @@ def test_upload_chunk_401_renews_the_token_and_resends_the_chunk(
     assert resp["success"] is True
     chunks = [c.request for c in mocked.calls if c.request.url.endswith("/upload")]
     assert [multipart_field(r.body, "file") for r in chunks] == [b"abcdefghij"] * 2
+
+
+# ---- the token-only client, for the video uploader ----
+
+
+def token_client():
+    return FUGAV3TokenClient(API_URL, "given-1", EXPIRES)
+
+
+def test_token_client_is_v3():
+    assert FUGAV3TokenClient.api_version == "v3"
+
+
+def test_token_client_sends_the_token_it_was_given(mocked):
+    mocked.get(f"{API_URL}/labels", json={"label": []}, match=bearer("given-1"))
+
+    assert token_client().get("/labels") == {
+        "success": True,
+        "status_code": 200,
+        "data": {"label": []},
+    }
+    assert len(mocked.calls) == 1
+
+
+def test_token_client_uses_the_token_until_it_expires(mocked, clock):
+    mocked.get(f"{API_URL}/labels", json={"label": []})
+    clock.now = EXPIRES - timedelta(seconds=1)
+
+    assert token_client().get("/labels")["success"] is True
+
+
+def test_token_client_returns_an_error_once_the_token_expires(mocked, clock):
+    clock.now = EXPIRES
+
+    resp = token_client().get("/labels")
+
+    assert resp == {
+        "success": False,
+        "status_code": None,
+        "error": {
+            "message": f"The FUGA token expired at {EXPIRES.isoformat()}, "
+            "and this client can't get a new one"
+        },
+    }
+    assert len(mocked.calls) == 0
+
+
+def test_token_client_returns_a_401_without_asking_for_a_token(mocked):
+    body = {"code": "UNAUTHORIZED", "message": "Invalid token"}
+    mocked.get(f"{API_URL}/labels", json=body, status=401)
+
+    resp = token_client().get("/labels")
+
+    assert resp == {"success": False, "status_code": 401, "error": body}
+    assert len(mocked.calls) == 1
+
+
+def test_token_client_retries_a_429_with_backoff(mocked, sleeps):
+    mocked.get(f"{API_URL}/labels", status=429)
+    mocked.get(f"{API_URL}/labels", status=429)
+    mocked.get(f"{API_URL}/labels", json={"label": []})
+
+    assert token_client().get("/labels")["success"] is True
+    assert sleeps == [1, 2]
+
+
+def test_token_client_refuses_an_expiry_without_a_timezone():
+    with pytest.raises(ValueError, match="expires_at must include a timezone"):
+        FUGAV3TokenClient(API_URL, "given-1", EXPIRES.replace(tzinfo=None))
+
+
+def test_token_client_accepts_the_expiry_cm_backend_sends(mocked):
+    # cm-backend sends isoformat() of its timezone-aware expiry
+    expires_at = datetime.fromisoformat(EXPIRES.isoformat())
+    mocked.get(f"{API_URL}/labels", json={"label": []})
+
+    resp = FUGAV3TokenClient(API_URL, "given-1", expires_at).get("/labels")
+
+    assert resp["success"] is True
+
+
+def test_token_client_upload_stops_at_the_first_chunk_after_expiry(
+    mocked, clock, audio_file
+):
+    mocked.post(f"{API_URL}/upload/start", json={"id": "upload-1"})
+
+    def chunk(request):
+        # The first chunk takes until the token expires
+        clock.now = EXPIRES
+        return 200, {}, '{"success": true}'
+
+    mocked.add_callback("POST", f"{API_URL}/upload", callback=chunk)
+
+    resp = token_client().upload_file(
+        str(audio_file), {"id": "asset-1", "type": "audio"}, chunk_size=4
+    )
+
+    assert resp["success"] is False
+    assert resp["status_code"] is None
+    assert resp.get("error", {})["message"].startswith("The FUGA token expired at")
+    assert [c.request.path_url for c in mocked.calls] == [
+        "/api/v3/upload/start",
+        "/api/v3/upload",
+    ]
