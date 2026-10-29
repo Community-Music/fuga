@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -246,13 +247,6 @@ def test_ensure_token_renews_a_token_that_is_due(mocked, client, store):
     assert client.ensure_token() == ("new", EXPIRES)
 
 
-def test_ensure_token_raises_when_it_cannot_get_a_token(mocked, client):
-    mocked.post(TOKEN_URL, status=429)
-
-    with pytest.raises(FUGAAuthError, match="rate-limited"):
-        client.ensure_token()
-
-
 def test_ensure_token_returns_a_token_with_at_least_min_valid_left(client, store):
     save(store, "tok-1", EXPIRES)
 
@@ -317,24 +311,6 @@ def test_ensure_token_raises_when_a_new_token_is_still_too_short(mocked, client)
     with pytest.raises(FUGAAuthError, match="less than 1:00:00"):
         client.ensure_token(min_valid=timedelta(minutes=60))
     assert token_requests(mocked) == 1
-
-
-def test_ensure_token_raises_during_a_pause(mocked, store):
-    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
-
-    with pytest.raises(FUGAAuthError, match="AUTHENTICATION_FAILED"):
-        make_client(store).ensure_token()
-    with pytest.raises(FUGAAuthError, match="not asking again"):
-        make_client(store).ensure_token()
-    assert token_requests(mocked) == 1
-
-
-def test_ensure_token_raises_on_a_network_failure(mocked, client):
-    mocked.post(TOKEN_URL, body=requests.ConnectionError("reset"))
-
-    with pytest.raises(FUGAAuthError, match="Token request failed: reset") as e:
-        client.ensure_token()
-    assert isinstance(e.value.__cause__, requests.ConnectionError)
 
 
 # ---- refused token requests, with no valid token ----
@@ -409,7 +385,7 @@ def test_a_network_failure_on_the_token_request_is_returned(mocked, client):
     assert client.get("/labels") == {
         "success": False,
         "status_code": None,
-        "error": {"message": "reset"},
+        "error": {"message": "Token request failed: reset"},
     }
 
 
@@ -603,97 +579,6 @@ def test_a_401_uses_a_token_another_client_already_renewed(mocked, client, store
     assert token_requests(mocked) == 0
 
 
-def test_a_refused_renewal_after_a_401_returns_the_401(mocked, client):
-    token_response(mocked, token="tok-1")
-    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
-    mocked.get(f"{API_URL}/labels", json={"code": "UNAUTHORIZED"}, status=401)
-
-    resp = client.get("/labels")
-
-    assert resp["status_code"] == 401
-    assert resp.get("error") == {"code": "UNAUTHORIZED"}
-
-
-def test_ensure_token_after_a_refused_renewal_after_a_401_waits_out_the_pause(
-    mocked, client, clock
-):
-    """FUGA rejected tok-1, so ensure_token() never hands it out."""
-    token_response(mocked, token="tok-1")
-    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
-    token_response(mocked, token="tok-2")
-    mocked.get(f"{API_URL}/labels", status=401, match=bearer("tok-1"))
-
-    assert client.get("/labels")["status_code"] == 401
-    with pytest.raises(FUGAAuthError, match="not asking again"):
-        client.ensure_token()
-
-    clock.advance(minutes=5)
-    assert client.ensure_token() == ("tok-2", EXPIRES + timedelta(minutes=5))
-    assert token_requests(mocked) == 3
-
-
-def test_no_request_sends_a_rejected_token_during_the_pause(mocked, client, clock):
-    token_response(mocked, token="tok-1")
-    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
-    token_response(mocked, token="tok-2")
-    mocked.get(f"{API_URL}/labels", status=401, match=bearer("tok-1"))
-    mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-2"))
-
-    assert client.get("/labels")["status_code"] == 401
-    resp = client.get("/labels")
-    assert resp["status_code"] is None
-    assert "not asking again" in resp.get("error", {})["message"]
-
-    clock.advance(minutes=5)
-    assert client.get("/labels")["success"] is True
-    sent = [c.request.headers.get("Authorization") for c in mocked.calls]
-    assert sent.count("Bearer tok-1") == 1
-
-
-def test_a_network_failure_renewing_after_a_401_pauses_every_client(
-    mocked, client, store, clock
-):
-    token_response(mocked, token="tok-1")
-    mocked.post(TOKEN_URL, body=requests.ConnectionError("reset"))
-    token_response(mocked, token="tok-2")
-    mocked.get(f"{API_URL}/labels", status=401, match=bearer("tok-1"))
-    mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-2"))
-
-    assert client.get("/labels") == {
-        "success": False,
-        "status_code": None,
-        "error": {"message": "reset"},
-    }
-    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
-    for c in (client, make_client(store)):
-        assert "not asking again" in c.get("/labels").get("error", {})["message"]
-    with pytest.raises(FUGAAuthError, match="not asking again"):
-        client.ensure_token()
-
-    clock.advance(minutes=5)
-    assert make_client(store).get("/labels")["success"] is True
-    assert client.ensure_token() == ("tok-2", EXPIRES + timedelta(minutes=5))
-    sent = [c.request.headers.get("Authorization") for c in mocked.calls]
-    assert sent.count("Bearer tok-1") == 1
-    assert token_requests(mocked) == 3
-
-
-def test_a_401_during_another_clients_pause_returns_the_401(mocked, client, store):
-    save(store, "tok-1", EXPIRES)
-    mocked.get(f"{API_URL}/artists", json={}, match=bearer("tok-1"))
-    client.get("/artists")
-    # Another client's token request failed after FUGA rejected tok-1
-    store.save("", NOW, NOW + RENEWAL_RETRY)
-    mocked.get(f"{API_URL}/labels", json={"code": "UNAUTHORIZED"}, status=401)
-
-    assert client.get("/labels") == {
-        "success": False,
-        "status_code": 401,
-        "error": {"code": "UNAUTHORIZED"},
-    }
-    assert token_requests(mocked) == 0
-
-
 def test_a_token_rejected_after_it_became_due_is_not_used_again(
     mocked, client, store, clock, sleeps
 ):
@@ -714,6 +599,132 @@ def test_a_token_rejected_after_it_became_due_is_not_used_again(
     assert sleeps == [1]
     sent = [c.request.headers.get("Authorization") for c in mocked.calls]
     assert sent.count("Bearer tok-1") == 1
+
+
+# ---- a failed renewal: one rule, whichever way it fails ----
+
+
+class TokenEndpoint:
+    """The token endpoint: fails as `kind` until `ok` is set, then gives tok-3."""
+
+    def __init__(self, mocked, kind):
+        self.kind = kind
+        self.ok = False
+        mocked.add_callback("POST", TOKEN_URL, callback=self.respond)
+
+    def respond(self, request):
+        if self.ok:
+            body = {"access_token": "tok-3", "token_type": "Bearer"}
+            return 200, {}, json.dumps(body | {"expires_in": LIFETIME})
+        if self.kind == "refused":
+            return 401, {}, '{"code": "AUTHENTICATION_FAILED"}'
+        if self.kind == "rate-limited":
+            return 429, {}, '{"code": "TOO_MANY_REQUESTS"}'
+        if self.kind == "network":
+            return requests.ConnectionError("reset")
+        raise AssertionError("token requested during a pause")
+
+
+def labels_rejecting_tok_1(request):
+    if request.headers.get("Authorization") == "Bearer tok-1":
+        return 401, {}, '{"code": "UNAUTHORIZED"}'
+    return 200, {}, "{}"
+
+
+# Each way a renewal can fail, and what ensure_token() raises for it
+FAILURES = {
+    "refused": "AUTHENTICATION_FAILED",
+    "rate-limited": "rate-limited",
+    "network": "Token request failed: reset",
+    "paused": "not asking again",
+}
+
+
+@pytest.mark.parametrize(
+    ("kind", "kept", "entry"),
+    [
+        pytest.param(
+            kind,
+            kept,
+            entry,
+            id=f"{kind}, {'valid token' if kept else 'no valid token'}, {entry}",
+        )
+        for kind in FAILURES
+        for kept in (False, True)
+        for entry in ("call after a 401", "ensure_token")
+        # A pause means the store holds no valid token
+        if not (kind == "paused" and kept)
+    ],
+)
+def test_a_failed_renewal(mocked, store, clock, caplog, kind, kept, entry):
+    """
+    Whichever way a renewal fails, a valid token FUGA hasn't rejected is
+    kept. With none, every client waits out the pause without sending tok-1.
+    """
+    caplog.set_level(logging.WARNING, logger="fuga.api")
+    endpoint = TokenEndpoint(mocked, kind)
+    mocked.add_callback("GET", f"{API_URL}/labels", callback=labels_rejecting_tok_1)
+    client = make_client(store)
+    if entry == "call after a 401":
+        save(store, "tok-1", EXPIRES)
+        client.ensure_token()  # the client holds tok-1, which FUGA now rejects
+    else:
+        save(store, "tok-1", NOW)  # expired
+    if kept:
+        save(store, "tok-2", NOW + timedelta(minutes=60))  # due, still valid
+    if kind == "paused":
+        store.save("", NOW, NOW + RENEWAL_RETRY)
+
+    # What the caller gets
+    if entry == "call after a 401":
+        resp = client.get("/labels")
+        if kept:
+            assert resp["success"] is True
+        elif kind == "rate-limited":
+            assert resp == {
+                "success": False,
+                "status_code": 429,
+                "error": {"code": "TOO_MANY_REQUESTS"},
+            }
+        else:
+            assert resp == {
+                "success": False,
+                "status_code": 401,
+                "error": {"code": "UNAUTHORIZED"},
+            }
+    elif kept:
+        assert client.ensure_token() == ("tok-2", NOW + timedelta(minutes=60))
+    else:
+        with pytest.raises(FUGAAuthError, match=FAILURES[kind]):
+            client.ensure_token()
+
+    # What the store holds, and what every client does until RENEWAL_RETRY
+    requested = token_requests(mocked)
+    if kept:
+        assert store.load() == (
+            "tok-2",
+            NOW + timedelta(minutes=60),
+            NOW + RENEWAL_RETRY,
+        )
+        assert "keeping the current token" in caplog.text
+        for c in (client, make_client(store)):
+            assert c.get("/labels")["success"] is True
+            assert c.ensure_token() == ("tok-2", NOW + timedelta(minutes=60))
+    else:
+        assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+        for c in (client, make_client(store)):
+            assert "not asking again" in c.get("/labels").get("error", {})["message"]
+            with pytest.raises(FUGAAuthError, match="not asking again"):
+                c.ensure_token()
+    assert token_requests(mocked) == requested
+
+    # After it, a new token
+    clock.advance(minutes=5)
+    endpoint.ok = True
+    assert client.ensure_token() == ("tok-3", EXPIRES + timedelta(minutes=5))
+    assert make_client(store).get("/labels")["success"] is True
+    sent = [c.request.headers.get("Authorization") for c in mocked.calls]
+    assert sent.count("Bearer tok-1") == (1 if entry == "call after a 401" else 0)
 
 
 # ---- the store's lock ----
@@ -796,7 +807,7 @@ def test_a_rate_limited_renewal_keeps_the_stored_token(
     assert labels.call_count == 2
     assert sleeps == []
     assert store.load() == ("tok-1", NOW + timedelta(minutes=30), NOW + RENEWAL_RETRY)
-    assert "rate-limited a token renewal" in caplog.text
+    assert "Token request rate-limited; keeping the current token" in caplog.text
 
 
 def test_after_a_rate_limited_renewal_every_client_waits(mocked, store):
