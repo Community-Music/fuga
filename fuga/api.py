@@ -30,8 +30,9 @@ SESSION_COOKIE = "connect.sid"
 # and the video uploader can't renew the token cm-backend hands it.
 TOKEN_RENEWAL_MARGIN = timedelta(minutes=90)
 
-# How long every client sharing a token store keeps its token before asking
-# again, after FUGA rate-limits or refuses a renewal of a token still valid.
+# How long every client sharing a token store waits before asking FUGA for a
+# token again after it rate-limits or refuses a token request: keeping the
+# token it has if that is still valid, failing calls if not.
 RENEWAL_RETRY = timedelta(minutes=5)
 
 # Seconds to wait before each retry of a v3 request FUGA rate-limited with a
@@ -54,6 +55,14 @@ class _TokenRateLimited(Exception):
     def __init__(self, response: requests.Response) -> None:
         super().__init__("Token request still rate-limited after retries")
         self.response = response
+
+
+class _TokenPaused(requests.RequestException):
+    """
+    The last token request failed and no token is usable, so the client won't
+    ask FUGA again yet. A RequestException so a call returns it like any
+    request that didn't reach FUGA.
+    """
 
 
 class BaseFUGAClient(ABC):
@@ -418,8 +427,10 @@ class TokenStore(Protocol):
     Where a v3 client keeps its access token, supplied by the caller so that
     processes sharing a credential share its token and its renewal time.
     `load` returns the token, its expiry and when to renew it, all
-    timezone-aware, or None if there is no token yet. `lock` must stop other
-    clients renewing the same token while it is held. The client calls `load`
+    timezone-aware, or None if there is no token yet. An empty token is a
+    pause the client saved after a failed token request: `renew_after` says
+    when to ask again. `lock` must stop other clients renewing the same token
+    while it is held. The client calls `load`
     outside the lock too, and `save` only inside it.
     """
 
@@ -473,7 +484,8 @@ class FUGAV3Client(BaseFUGAClient):
     valid, every client keeps that token for RENEWAL_RETRY before asking
     again. With no valid token, a refusal raises FUGAAuthError, and a token
     endpoint still rate-limiting after the backoff makes the call return its
-    429.
+    429. Either way no client asks again for RENEWAL_RETRY: calls until then
+    return an error without reaching FUGA.
     """
 
     api_version = "v3"
@@ -504,37 +516,62 @@ class FUGAV3Client(BaseFUGAClient):
     def _reauthenticate(self) -> None:
         self._renew(rejected=self.token.access_token if self.token else None)
 
-    def ensure_token(self) -> tuple[str, datetime]:
+    def ensure_token(self, min_valid: timedelta = timedelta(0)) -> tuple[str, datetime]:
         """
         The token and its expiry, renewed first if it is due. Raises
-        FUGAAuthError if there is no valid token and FUGA won't give one.
+        FUGAAuthError if there is no valid token and FUGA won't give one, or
+        if the token has less than `min_valid` left, which can happen after
+        FUGA refuses renewals. A caller handing the token to a process that
+        can't renew it passes that process's longest run.
         """
         if not self._is_authenticated():
             try:
                 self.authenticate()
-            except _TokenRateLimited as e:
+            except (_TokenRateLimited, _TokenPaused) as e:
                 raise FUGAAuthError(str(e)) from None
         assert self.token is not None
+        if self.token.expires_at - _now() < min_valid:
+            raise FUGAAuthError(
+                f"The FUGA token expires at {self.token.expires_at.isoformat()}, "
+                f"less than {min_valid} from now"
+            )
         return self.token.access_token, self.token.expires_at
 
     def _renew(self, rejected: str | None) -> None:
         """Use a stored token that isn't due, or get a new one from FUGA."""
-        if self._use_stored_token(self.token_store.load(), rejected):
+        stored = self.token_store.load()
+        if self._use_stored_token(stored, rejected):
             return
+        self._check_not_paused(stored)
+        failure: FUGAAuthError | _TokenRateLimited | None = None
         with self.token_store.lock():
-            # Another client may have renewed the token while this one waited
+            # Another client may have renewed the token, or failed to, while
+            # this one waited
             stored = self.token_store.load()
             if self._use_stored_token(stored, rejected):
                 return
+            self._check_not_paused(stored)
             # A token FUGA hasn't rejected stands in if the renewal fails
             current = Token(*stored) if stored else None
             if current and (
                 current.access_token == rejected or current.expires_at <= _now()
             ):
                 current = None
-            token = self._request_token(current)
-            self.token_store.save(*token)
-        self._use_token(token)
+            try:
+                token = self._request_token(current)
+            except (FUGAAuthError, _TokenRateLimited) as e:
+                # No token to keep: an empty one whose renew_after tells every
+                # client sharing the store not to ask before then. The error
+                # is raised once the lock is released, so a store that rolls
+                # back on an error, such as a database transaction, keeps it.
+                now = _now()
+                self.token_store.save("", now, now + RENEWAL_RETRY)
+                failure = e
+            else:
+                self.token_store.save(*token)
+                self._use_token(token)
+        if failure is not None:
+            raise failure
 
     def _use_stored_token(
         self, stored: tuple[str, datetime, datetime] | None, rejected: str | None
@@ -542,10 +579,25 @@ class FUGAV3Client(BaseFUGAClient):
         if stored is None:
             return False
         token = Token(*stored)
-        if token.access_token == rejected or _now() >= token.renew_after:
+        if (
+            not token.access_token
+            or token.access_token == rejected
+            or _now() >= token.renew_after
+        ):
             return False
         self._use_token(token)
         return True
+
+    @staticmethod
+    def _check_not_paused(stored: tuple[str, datetime, datetime] | None) -> None:
+        if stored is None:
+            return
+        token = Token(*stored)
+        if not token.access_token and _now() < token.renew_after:
+            raise _TokenPaused(
+                "The last FUGA token request failed; not asking again until "
+                + token.renew_after.isoformat()
+            )
 
     def _use_token(self, token: Token) -> None:
         self.token = token
@@ -595,7 +647,12 @@ class FUGAV3Client(BaseFUGAClient):
                 parts.append(resp.text)
             detail = " ".join(str(p) for p in parts if p)
             problem = f"Token request failed: {detail}"
-        elif not access_token or not isinstance(expires_in, (int, float)):
+        elif (
+            not access_token
+            or not isinstance(expires_in, (int, float))
+            or isinstance(expires_in, bool)
+            or expires_in <= 0
+        ):
             problem = "Token response has no access_token or expires_in"
         else:
             now = _now()
@@ -619,6 +676,10 @@ class FUGAV3Client(BaseFUGAClient):
         return token._replace(renew_after=min(_now() + RENEWAL_RETRY, token.expires_at))
 
     def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
-        if resp.status_code == 429 and attempt < len(RATE_LIMIT_BACKOFF):
-            return RATE_LIMIT_BACKOFF[attempt]
-        return None
+        if resp.status_code != 429 or attempt >= len(RATE_LIMIT_BACKOFF):
+            return None
+        # FUGA doesn't document Retry-After; if it sends one in seconds, use it
+        retry_after = resp.headers.get("Retry-After", "")
+        return (
+            int(retry_after) if retry_after.isdigit() else RATE_LIMIT_BACKOFF[attempt]
+        )

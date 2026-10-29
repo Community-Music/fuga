@@ -245,6 +245,35 @@ def test_ensure_token_raises_when_it_cannot_get_a_token(mocked, client):
         client.ensure_token()
 
 
+def test_ensure_token_returns_a_token_with_at_least_min_valid_left(client, store):
+    save(store, "tok-1", EXPIRES)
+
+    assert client.ensure_token(min_valid=timedelta(minutes=60)) == ("tok-1", EXPIRES)
+
+
+def test_ensure_token_refuses_a_kept_token_with_less_than_min_valid_left(
+    mocked, client, store
+):
+    """After a refused renewal the kept token is too short to hand over."""
+    save(store, "tok-1", NOW + timedelta(minutes=50))
+    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
+
+    assert client.ensure_token() == ("tok-1", NOW + timedelta(minutes=50))
+    with pytest.raises(FUGAAuthError, match="less than 1:00:00"):
+        client.ensure_token(min_valid=timedelta(minutes=60))
+    assert token_requests(mocked) == 1
+
+
+def test_ensure_token_raises_during_a_pause(mocked, store):
+    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
+
+    with pytest.raises(FUGAAuthError, match="AUTHENTICATION_FAILED"):
+        make_client(store).ensure_token()
+    with pytest.raises(FUGAAuthError, match="not asking again"):
+        make_client(store).ensure_token()
+    assert token_requests(mocked) == 1
+
+
 # ---- refused token requests, with no valid token ----
 
 
@@ -296,7 +325,13 @@ def test_auth_error_is_still_a_value_error(mocked, client):
 
 @pytest.mark.parametrize(
     "body",
-    [{"token_type": "Bearer", "expires_in": LIFETIME}, {"access_token": "tok-1"}],
+    [
+        {"token_type": "Bearer", "expires_in": LIFETIME},
+        {"access_token": "tok-1"},
+        {"access_token": "tok-1", "expires_in": 0},
+        {"access_token": "tok-1", "expires_in": -5},
+        {"access_token": "tok-1", "expires_in": True},
+    ],
 )
 def test_a_token_response_without_a_token_or_lifetime_raises(mocked, client, body):
     token_response(mocked, json=body)
@@ -313,6 +348,85 @@ def test_a_network_failure_on_the_token_request_is_returned(mocked, client):
         "status_code": None,
         "error": {"message": "reset"},
     }
+
+
+# ---- with no valid token, a failed token request pauses every client ----
+
+
+def test_after_a_refusal_with_no_token_no_client_asks_again_for_a_while(
+    mocked, store, clock
+):
+    token = token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
+
+    with pytest.raises(FUGAAuthError):
+        make_client(store).get("/labels")
+    resp = make_client(store).get("/labels")
+
+    assert resp["success"] is False
+    assert resp["status_code"] is None
+    assert "not asking again until" in resp.get("error", {})["message"]
+    assert token.call_count == 1
+    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+
+    clock.advance(minutes=5)
+    with pytest.raises(FUGAAuthError):
+        make_client(store).get("/labels")
+    assert token.call_count == 2
+
+
+class TransactionalStore(MemoryTokenStore):
+    """Undoes saves made under `lock()` if the block raises, as a database would."""
+
+    @contextmanager
+    def lock(self):
+        before = self._token
+        try:
+            yield
+        except BaseException:
+            self._token = before
+            raise
+
+
+def test_the_pause_survives_a_store_that_rolls_back_on_errors(mocked):
+    store = TransactionalStore()
+    token = token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
+
+    with pytest.raises(FUGAAuthError):
+        make_client(store).get("/labels")
+
+    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+    assert make_client(store).get("/labels")["status_code"] is None
+    assert token.call_count == 1
+
+
+def test_after_rate_limiting_with_no_token_no_client_asks_again_for_a_while(
+    mocked, store, sleeps
+):
+    token = mocked.post(TOKEN_URL, status=429)
+
+    assert make_client(store).get("/labels")["status_code"] == 429
+    assert make_client(store).get("/labels")["status_code"] is None
+
+    assert token.call_count == 6
+    assert sleeps == [1, 2, 4, 8, 16]
+
+
+def test_a_new_token_ends_the_pause(mocked, store, clock):
+    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
+    token_response(mocked, token="tok-1")
+    labels = mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-1"))
+
+    with pytest.raises(FUGAAuthError):
+        make_client(store).get("/labels")
+    clock.advance(minutes=5)
+
+    assert make_client(store).get("/labels")["success"] is True
+    assert labels.call_count == 1
+    assert store.load() == (
+        "tok-1",
+        NOW + timedelta(minutes=5, seconds=LIFETIME),
+        NOW + timedelta(minutes=5, seconds=LIFETIME) - TOKEN_RENEWAL_MARGIN,
+    )
 
 
 # ---- a refused renewal keeps a token that is still valid ----
@@ -625,6 +739,28 @@ def test_a_429_is_returned_after_the_last_retry(mocked, client, store, sleeps):
     }
     assert labels.call_count == 6
     assert sleeps == [1, 2, 4, 8, 16]
+
+
+def test_a_429_waits_as_long_as_retry_after_says(mocked, client, store, sleeps):
+    save(store, "tok-1", EXPIRES)
+    mocked.get(f"{API_URL}/labels", status=429, headers={"Retry-After": "30"})
+    # Not a number of seconds: falls back to the schedule
+    mocked.get(f"{API_URL}/labels", status=429, headers={"Retry-After": "soon"})
+    mocked.get(f"{API_URL}/labels", json={})
+
+    assert client.get("/labels")["success"] is True
+    assert sleeps == [30, 2]
+
+
+def test_a_rate_limited_token_request_waits_as_long_as_retry_after_says(
+    mocked, client, sleeps
+):
+    mocked.post(TOKEN_URL, status=429, headers={"Retry-After": "12"})
+    token_response(mocked)
+    mocked.get(f"{API_URL}/labels", json={})
+
+    assert client.get("/labels")["success"] is True
+    assert sleeps == [12]
 
 
 def test_other_failures_are_not_retried(mocked, client, store, sleeps):
