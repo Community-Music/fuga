@@ -795,3 +795,73 @@ def test_a_single_number_timeout_is_passed_through(mocked):
     client.get("/labels")
 
     assert mocked.calls[0].request.req_kwargs["timeout"] == 30
+
+
+# ---- upload chunks share the request path (CM-3872 review item 8) ----
+
+
+def test_upload_chunk_logs_in_again_on_a_401_and_resends_the_chunk(mocked, audio_file):
+    login = login_response(mocked)
+    mocked.post(f"{API_URL}/upload/start", json={"id": "upload-1"})
+    rejected = mocked.post(
+        f"{API_URL}/upload",
+        json={"code": "NOT_LOGGED_IN"},
+        status=401,
+        match=[matchers.header_matcher({"Cookie": COOKIE})],
+    )
+    accepted = mocked.post(
+        f"{API_URL}/upload",
+        json={"success": True},
+        match=[matchers.header_matcher({"Cookie": "connect.sid=fresh"})],
+    )
+    mocked.post(f"{API_URL}/upload/finish", json=True)
+
+    client = FUGAClient(API_URL, username="user", password="secret", auth_cookie=COOKIE)
+    resp = client.upload_file(
+        str(audio_file), {"id": "asset-1", "type": "audio"}, chunk_size=100
+    )
+
+    assert resp["success"] is True
+    assert login.call_count == 1
+    assert rejected.call_count == 1
+    assert accepted.call_count == 1
+    sent = [c.request for c in mocked.calls if c.request.url.endswith("/upload")]
+    assert [multipart_field(r.body, "file") for r in sent] == [b"abcdefghij"] * 2
+    assert sent[1].headers["Content-Range"] == "bytes 0-9/10"
+
+
+def test_upload_chunk_rejection_returns_fugas_code_and_message(
+    mocked, client, audio_file
+):
+    """The shape FUGA's spec gives for /upload errors (UploadErrorResponse)."""
+    mocked.post(f"{API_URL}/upload/start", json={"id": "upload-1"})
+    mocked.post(
+        f"{API_URL}/upload",
+        status=400,
+        json={
+            "success": False,
+            "error": {"code": "INVALID_PART", "message": "The part is invalid"},
+        },
+    )
+
+    resp = client.upload_file(
+        str(audio_file), {"id": "asset-1", "type": "audio"}, chunk_size=4
+    )
+
+    assert resp == {
+        "success": False,
+        "status_code": 400,
+        "error": {"code": "INVALID_PART", "message": "The part is invalid"},
+    }
+
+
+def test_v2_client_does_not_retry_a_429(mocked, client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("fuga.api.time.sleep", sleeps.append)
+    labels = mocked.get(f"{API_URL}/labels", json={"code": "TOO_MANY"}, status=429)
+
+    resp = client.get("/labels")
+
+    assert resp["status_code"] == 429
+    assert labels.call_count == 1
+    assert sleeps == []
