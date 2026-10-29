@@ -1136,6 +1136,33 @@ def test_token_client_retries_a_429_with_backoff(mocked, sleeps):
     assert sleeps == [1, 2]
 
 
+def test_token_client_returns_a_429_above_the_retry_after_limit(mocked, sleeps):
+    mocked.get(f"{API_URL}/labels", status=429, headers={"Retry-After": "61"})
+
+    assert token_client().get("/labels")["status_code"] == 429
+    assert sleeps == []
+
+
+def test_token_client_does_not_wait_until_its_token_expires(mocked, clock, sleeps):
+    clock.now = EXPIRES - timedelta(seconds=30)
+    mocked.get(f"{API_URL}/labels", status=429, headers={"Retry-After": "30"})
+
+    assert token_client().get("/labels")["status_code"] == 429
+    assert sleeps == []
+    assert len(mocked.calls) == 1
+
+
+def test_token_client_still_waits_when_the_token_outlasts_the_wait(
+    mocked, clock, sleeps
+):
+    clock.now = EXPIRES - timedelta(seconds=30)
+    mocked.get(f"{API_URL}/labels", status=429, headers={"Retry-After": "29"})
+    mocked.get(f"{API_URL}/labels", json={"label": []})
+
+    assert token_client().get("/labels")["success"] is True
+    assert sleeps == [29]
+
+
 def test_token_client_refuses_an_expiry_without_a_timezone():
     with pytest.raises(ValueError, match="expires_at must include a timezone"):
         FUGAV3TokenClient(API_URL, "given-1", EXPIRES.replace(tzinfo=None))

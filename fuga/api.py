@@ -777,7 +777,8 @@ class FUGAV3TokenClient(BaseFUGAClient):
     until `expires_at` and never asks FUGA for a new one: after that, calls
     return an error without reaching FUGA, and a 401 from FUGA is returned as
     the response. A request FUGA rate-limits is retried after
-    RATE_LIMIT_BACKOFF, as in FUGAV3Client.
+    RATE_LIMIT_BACKOFF, as in FUGAV3Client, unless the wait would last until
+    the token expires: then the 429 is returned.
 
     `expires_at` must include a timezone, or the client refuses it.
     """
@@ -808,7 +809,11 @@ class FUGAV3TokenClient(BaseFUGAClient):
         )
 
     def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
-        return _rate_limit_delay(resp, attempt)
+        delay = _rate_limit_delay(resp, attempt)
+        # Waiting until the token has expired would only send it expired
+        if delay is not None and _now() + timedelta(seconds=delay) >= self.expires_at:
+            return None
+        return delay
 
 
 def _rate_limit_delay(resp: requests.Response, attempt: int) -> float | None:
