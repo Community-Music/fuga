@@ -1,13 +1,14 @@
 import functools
 import inspect
 from collections.abc import Callable
-from typing import Any, ClassVar, Concatenate, ParamSpec, TypeVar, overload
+from typing import Any, ClassVar, Concatenate, ParamSpec, Protocol, TypeVar, overload
 
 from .api import BaseFUGAClient
 from .response import FugaResponse, error_response
 
 P = ParamSpec("P")
 E = TypeVar("E", bound="FUGAEntity")
+C = TypeVar("C", bound="HasClient")
 
 # The most pages one paginate() call fetches. It only stops a FUGA that never
 # sends an empty page or a total; the longest real list, subgenres, is 2 pages.
@@ -27,7 +28,14 @@ class FUGAEntity:
         return error_response(f"{self.id_field} is required")
 
 
+class HasClient(Protocol):
+    """Anything that sends its requests through a client, entity or not."""
+
+    client: BaseFUGAClient
+
+
 EntityMethod = Callable[Concatenate[E, P], FugaResponse]
+ClientMethod = Callable[Concatenate[C, P], FugaResponse]
 
 
 @overload
@@ -81,10 +89,10 @@ def _check_ids(
 
 def v2_only(method: EntityMethod[E, P]) -> EntityMethod[E, P]:
     """
-    For endpoints FUGA removed in API v3. Through any client whose
-    `api_version` isn't "v2", including a test mock that doesn't set one, the
-    call fails here instead of reaching FUGA. Remove these methods in fuga
-    2.0.0.
+    For endpoints FUGA removed in API v3, or whose request and reply changed
+    shape there. Through any client whose `api_version` isn't "v2", including
+    a test mock that doesn't set one, the call fails here instead of reaching
+    FUGA. Remove these methods in fuga 2.0.0.
     """
 
     @functools.wraps(method)
@@ -93,6 +101,26 @@ def v2_only(method: EntityMethod[E, P]) -> EntityMethod[E, P]:
         if version != "v2":
             return error_response(
                 f"{method.__name__} is only available in FUGA API v2, not {version}"
+            )
+        return method(self, *args, **kwargs)
+
+    return wrapper
+
+
+def v3_only(method: ClientMethod[C, P]) -> ClientMethod[C, P]:
+    """
+    For endpoints only FUGA API v3 has, or whose meaning changed there, such as
+    the contributor delete keyed by person id rather than entry id. Through any
+    client whose `api_version` isn't "v3", including a test mock that doesn't
+    set one, the call fails here instead of reaching FUGA.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: C, *args: P.args, **kwargs: P.kwargs) -> FugaResponse:
+        version = getattr(self.client, "api_version", None)
+        if version != "v3":
+            return error_response(
+                f"{method.__name__} is only available in FUGA API v3, not {version}"
             )
         return method(self, *args, **kwargs)
 
