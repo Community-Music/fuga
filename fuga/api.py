@@ -40,6 +40,11 @@ RENEWAL_RETRY = timedelta(minutes=5)
 # calling while it is limited.
 RATE_LIMIT_BACKOFF = (1, 2, 4, 8, 16)
 
+# The longest Retry-After, in seconds, a v3 client waits for. FUGA doesn't
+# document the header; a longer wait returns the 429 instead of holding a
+# worker.
+RETRY_AFTER_LIMIT = 60
+
 
 class FUGAAuthError(ValueError):
     """
@@ -518,15 +523,20 @@ class FUGAV3Client(BaseFUGAClient):
 
     def ensure_token(self, min_valid: timedelta = timedelta(0)) -> tuple[str, datetime]:
         """
-        The token and its expiry, renewed first if it is due. Raises
-        FUGAAuthError if there is no valid token and FUGA won't give one, or
-        if the token has less than `min_valid` left, which can happen after
-        FUGA refuses renewals. A caller handing the token to a process that
-        can't renew it passes that process's longest run.
+        The token and its expiry, renewed first if it is due or has less than
+        `min_valid` left. Raises FUGAAuthError if there is no valid token and
+        FUGA won't give one, or if the token still has less than `min_valid`
+        left, which can happen when FUGA refuses renewals or issues tokens
+        that short. A caller handing the token to a process that can't renew
+        it passes that process's longest run.
         """
-        if not self._is_authenticated():
+        if (
+            not self._is_authenticated()
+            or self.token is None
+            or self.token.expires_at - _now() < min_valid
+        ):
             try:
-                self.authenticate()
+                self._renew(rejected=None, min_valid=min_valid)
             except (_TokenRateLimited, _TokenPaused) as e:
                 raise FUGAAuthError(str(e)) from None
         assert self.token is not None
@@ -537,10 +547,13 @@ class FUGAV3Client(BaseFUGAClient):
             )
         return self.token.access_token, self.token.expires_at
 
-    def _renew(self, rejected: str | None) -> None:
-        """Use a stored token that isn't due, or get a new one from FUGA."""
+    def _renew(self, rejected: str | None, min_valid: timedelta = timedelta(0)) -> None:
+        """
+        Use a stored token that isn't due and has at least `min_valid` left,
+        or get a new one from FUGA.
+        """
         stored = self.token_store.load()
-        if self._use_stored_token(stored, rejected):
+        if self._use_stored_token(stored, rejected, min_valid):
             return
         self._check_not_paused(stored)
         failure: FUGAAuthError | _TokenRateLimited | None = None
@@ -548,7 +561,7 @@ class FUGAV3Client(BaseFUGAClient):
             # Another client may have renewed the token, or failed to, while
             # this one waited
             stored = self.token_store.load()
-            if self._use_stored_token(stored, rejected):
+            if self._use_stored_token(stored, rejected, min_valid):
                 return
             self._check_not_paused(stored)
             # A token FUGA hasn't rejected stands in if the renewal fails
@@ -574,15 +587,20 @@ class FUGAV3Client(BaseFUGAClient):
             raise failure
 
     def _use_stored_token(
-        self, stored: tuple[str, datetime, datetime] | None, rejected: str | None
+        self,
+        stored: tuple[str, datetime, datetime] | None,
+        rejected: str | None,
+        min_valid: timedelta = timedelta(0),
     ) -> bool:
         if stored is None:
             return False
         token = Token(*stored)
+        now = _now()
         if (
             not token.access_token
             or token.access_token == rejected
-            or _now() >= token.renew_after
+            or now >= token.renew_after
+            or token.expires_at - now < min_valid
         ):
             return False
         self._use_token(token)
@@ -678,8 +696,10 @@ class FUGAV3Client(BaseFUGAClient):
     def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
         if resp.status_code != 429 or attempt >= len(RATE_LIMIT_BACKOFF):
             return None
-        # FUGA doesn't document Retry-After; if it sends one in seconds, use it
+        # FUGA doesn't document Retry-After; if it sends one in seconds, use
+        # it, up to RETRY_AFTER_LIMIT
         retry_after = resp.headers.get("Retry-After", "")
-        return (
-            int(retry_after) if retry_after.isdigit() else RATE_LIMIT_BACKOFF[attempt]
-        )
+        if not retry_after.isdigit():
+            return RATE_LIMIT_BACKOFF[attempt]
+        seconds = int(retry_after)
+        return seconds if seconds <= RETRY_AFTER_LIMIT else None

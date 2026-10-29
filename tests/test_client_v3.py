@@ -261,6 +261,32 @@ def test_ensure_token_refuses_a_kept_token_with_less_than_min_valid_left(
     assert client.ensure_token() == ("tok-1", NOW + timedelta(minutes=50))
     with pytest.raises(FUGAAuthError, match="less than 1:00:00"):
         client.ensure_token(min_valid=timedelta(minutes=60))
+    # The short token makes it try once more before giving up
+    assert token_requests(mocked) == 2
+
+
+def test_ensure_token_renews_a_token_not_yet_due_with_less_than_min_valid_left(
+    mocked, client, clock
+):
+    """A 100-minute token is due at 50 minutes, but has 55 left at 45."""
+    token_response(mocked, token="tok-1", lifetime=6000)
+    token_response(mocked, token="tok-2", lifetime=6000)
+
+    client.ensure_token()
+    clock.advance(minutes=45)
+
+    assert client.ensure_token(min_valid=timedelta(minutes=60)) == (
+        "tok-2",
+        NOW + timedelta(minutes=145),
+    )
+    assert token_requests(mocked) == 2
+
+
+def test_ensure_token_raises_when_a_new_token_is_still_too_short(mocked, client):
+    token_response(mocked, lifetime=3000)
+
+    with pytest.raises(FUGAAuthError, match="less than 1:00:00"):
+        client.ensure_token(min_valid=timedelta(minutes=60))
     assert token_requests(mocked) == 1
 
 
@@ -750,6 +776,37 @@ def test_a_429_waits_as_long_as_retry_after_says(mocked, client, store, sleeps):
 
     assert client.get("/labels")["success"] is True
     assert sleeps == [30, 2]
+
+
+def test_a_429_with_a_retry_after_over_the_limit_is_returned(
+    mocked, client, store, sleeps
+):
+    save(store, "tok-1", EXPIRES)
+    labels = mocked.get(f"{API_URL}/labels", status=429, headers={"Retry-After": "61"})
+
+    assert client.get("/labels")["status_code"] == 429
+    assert labels.call_count == 1
+    assert sleeps == []
+
+
+def test_a_retry_after_at_the_limit_is_waited_for(mocked, client, store, sleeps):
+    save(store, "tok-1", EXPIRES)
+    mocked.get(f"{API_URL}/labels", status=429, headers={"Retry-After": "60"})
+    mocked.get(f"{API_URL}/labels", json={})
+
+    assert client.get("/labels")["success"] is True
+    assert sleeps == [60]
+
+
+def test_a_token_request_with_a_retry_after_over_the_limit_pauses(
+    mocked, store, sleeps
+):
+    token = mocked.post(TOKEN_URL, status=429, headers={"Retry-After": "3600"})
+
+    assert make_client(store).get("/labels")["status_code"] == 429
+    assert make_client(store).get("/labels")["status_code"] is None
+    assert token.call_count == 1
+    assert sleeps == []
 
 
 def test_a_rate_limited_token_request_waits_as_long_as_retry_after_says(
