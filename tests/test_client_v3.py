@@ -509,6 +509,22 @@ def test_a_refused_renewal_keeps_the_valid_token(mocked, client, store, caplog):
     assert "keeping the current token" in caplog.text
 
 
+def test_a_network_failure_on_renewal_keeps_the_valid_token(
+    mocked, client, store, caplog
+):
+    save(store, "tok-1", NOW + timedelta(minutes=60))
+    mocked.post(TOKEN_URL, body=requests.ConnectionError("reset"))
+    labels = mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-1"))
+
+    with caplog.at_level(logging.ERROR, logger="fuga.api"):
+        assert client.get("/labels")["success"] is True
+
+    assert labels.call_count == 1
+    assert store.load() == ("tok-1", NOW + timedelta(minutes=60), NOW + RENEWAL_RETRY)
+    assert "Token request failed: reset" in caplog.text
+    assert "keeping the current token" in caplog.text
+
+
 def test_after_a_refused_renewal_every_client_waits_before_asking_again(
     mocked, store, clock
 ):
@@ -632,6 +648,34 @@ def test_no_request_sends_a_rejected_token_during_the_pause(mocked, client, cloc
     assert client.get("/labels")["success"] is True
     sent = [c.request.headers.get("Authorization") for c in mocked.calls]
     assert sent.count("Bearer tok-1") == 1
+
+
+def test_a_network_failure_renewing_after_a_401_pauses_every_client(
+    mocked, client, store, clock
+):
+    token_response(mocked, token="tok-1")
+    mocked.post(TOKEN_URL, body=requests.ConnectionError("reset"))
+    token_response(mocked, token="tok-2")
+    mocked.get(f"{API_URL}/labels", status=401, match=bearer("tok-1"))
+    mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-2"))
+
+    assert client.get("/labels") == {
+        "success": False,
+        "status_code": None,
+        "error": {"message": "reset"},
+    }
+    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+    for c in (client, make_client(store)):
+        assert "not asking again" in c.get("/labels").get("error", {})["message"]
+    with pytest.raises(FUGAAuthError, match="not asking again"):
+        client.ensure_token()
+
+    clock.advance(minutes=5)
+    assert make_client(store).get("/labels")["success"] is True
+    assert client.ensure_token() == ("tok-2", EXPIRES + timedelta(minutes=5))
+    sent = [c.request.headers.get("Authorization") for c in mocked.calls]
+    assert sent.count("Bearer tok-1") == 1
+    assert token_requests(mocked) == 3
 
 
 def test_a_401_during_another_clients_pause_returns_the_401(mocked, client, store):
