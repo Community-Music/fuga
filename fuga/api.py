@@ -45,6 +45,11 @@ RATE_LIMIT_BACKOFF = (1, 2, 4, 8, 16)
 # worker.
 RETRY_AFTER_LIMIT = 60
 
+# The timeout for a v3 token request. It runs while holding the token store's
+# lock, so a token endpoint that stops answering holds up every client sharing
+# the store for at most 30 s per read rather than DEFAULT_TIMEOUT's 300 s.
+TOKEN_REQUEST_TIMEOUT = (DEFAULT_TIMEOUT[0], 30)
+
 
 class FUGAAuthError(ValueError):
     """
@@ -141,7 +146,7 @@ class BaseFUGAClient(ABC):
                 reauthenticated = True
                 try:
                     self._reauthenticate()
-                except FUGAAuthError:
+                except (FUGAAuthError, _TokenPaused):
                     # The caller gets FUGA's 401 to act on, as before re-login existed
                     return resp
                 except _TokenRateLimited as e:
@@ -481,7 +486,8 @@ class FUGAV3Client(BaseFUGAClient):
     token on the first request that needs one, and renews it once its
     `renew_after` has passed: TOKEN_RENEWAL_MARGIN before it expires, or
     halfway through its life if that is sooner. After a 401 it renews the
-    token FUGA rejected, unless another client already has. Every request is
+    token FUGA rejected, unless another client already has; if it can't, it
+    drops the rejected token rather than use it again. Every request is
     checked, upload chunks included, and any request FUGA rate-limits is
     retried after RATE_LIMIT_BACKOFF.
 
@@ -519,16 +525,23 @@ class FUGAV3Client(BaseFUGAClient):
         self._renew(rejected=None)
 
     def _reauthenticate(self) -> None:
-        self._renew(rejected=self.token.access_token if self.token else None)
+        try:
+            self._renew(rejected=self.token.access_token if self.token else None)
+        except Exception:
+            # FUGA has rejected this token, so no call or ensure_token() uses
+            # it again
+            self.token = None
+            self.session.headers.pop("Authorization", None)
+            raise
 
     def ensure_token(self, min_valid: timedelta = timedelta(0)) -> tuple[str, datetime]:
         """
         The token and its expiry, renewed first if it is due or has less than
         `min_valid` left. Raises FUGAAuthError if there is no valid token and
-        FUGA won't give one, or if the token still has less than `min_valid`
-        left, which can happen when FUGA refuses renewals or issues tokens
-        that short. A caller handing the token to a process that can't renew
-        it passes that process's longest run.
+        FUGA won't give one or can't be reached, or if the token still has
+        less than `min_valid` left, which can happen when FUGA refuses
+        renewals or issues tokens that short. A caller handing the token to a
+        process that can't renew it passes that process's longest run.
         """
         if (
             not self._is_authenticated()
@@ -539,6 +552,8 @@ class FUGAV3Client(BaseFUGAClient):
                 self._renew(rejected=None, min_valid=min_valid)
             except (_TokenRateLimited, _TokenPaused) as e:
                 raise FUGAAuthError(str(e)) from None
+            except requests.RequestException as e:
+                raise FUGAAuthError(f"Token request failed: {e}") from e
         assert self.token is not None
         if self.token.expires_at - _now() < min_valid:
             raise FUGAAuthError(
@@ -634,7 +649,7 @@ class FUGAV3Client(BaseFUGAClient):
                 f"{self.api_url}/oauth/token",
                 data={"grant_type": "client_credentials"},
                 auth=(self.client_id, self.client_secret),
-                timeout=self.timeout,
+                timeout=TOKEN_REQUEST_TIMEOUT,
             )
             if resp.status_code != 429:
                 break
@@ -691,7 +706,10 @@ class FUGAV3Client(BaseFUGAClient):
 
     @staticmethod
     def _put_off(token: Token) -> Token:
-        return token._replace(renew_after=min(_now() + RENEWAL_RETRY, token.expires_at))
+        # Never earlier than the token was already due, such as after a
+        # renewal ensure_token() forced for min_valid
+        renew_after = max(token.renew_after, _now() + RENEWAL_RETRY)
+        return token._replace(renew_after=min(renew_after, token.expires_at))
 
     def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
         if resp.status_code != 429 or attempt >= len(RATE_LIMIT_BACKOFF):
