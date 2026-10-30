@@ -90,6 +90,14 @@ class _TokenRequestFailed(requests.RequestException):
 _TOKEN_FAILURES = (FUGAAuthError, _TokenRateLimited, _TokenRequestFailed, _TokenPaused)
 
 
+class _TokenExpired(requests.RequestException):
+    """
+    A token-only client's token has expired, and it can't get another. A
+    RequestException so a call returns it like any request that didn't reach
+    FUGA.
+    """
+
+
 class BaseFUGAClient(ABC):
     """
     The HTTP layer shared by every FUGA API version.
@@ -759,12 +767,63 @@ class FUGAV3Client(BaseFUGAClient):
         )
 
     def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
-        if resp.status_code != 429 or attempt >= len(RATE_LIMIT_BACKOFF):
+        return _rate_limit_delay(resp, attempt)
+
+
+class FUGAV3TokenClient(BaseFUGAClient):
+    """
+    FUGA API v3 with a token another process got, for a client with no
+    credential of its own, such as the video uploader. It sends `access_token`
+    until `expires_at` and never asks FUGA for a new one: after that, calls
+    return an error without reaching FUGA, and a 401 from FUGA is returned as
+    the response. A request FUGA rate-limits is retried after
+    RATE_LIMIT_BACKOFF, as in FUGAV3Client, unless the wait would last until
+    the token expires: then the 429 is returned.
+
+    `expires_at` must include a timezone, or the client refuses it.
+    """
+
+    api_version = "v3"
+
+    def __init__(
+        self,
+        api_url: str,
+        access_token: str,
+        expires_at: datetime,
+        timeout: Timeout = DEFAULT_TIMEOUT,
+    ) -> None:
+        # A naive expiry can't be compared with _now(), so every call would raise
+        if expires_at.utcoffset() is None:
+            raise ValueError("expires_at must include a timezone")
+        super().__init__(api_url, timeout)
+        self.expires_at = expires_at
+        self.session.headers["Authorization"] = f"Bearer {access_token}"
+
+    def _is_authenticated(self) -> bool:
+        return _now() < self.expires_at
+
+    def authenticate(self) -> None:
+        raise _TokenExpired(
+            f"The FUGA token expired at {self.expires_at.isoformat()}, "
+            "and this client can't get a new one"
+        )
+
+    def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
+        delay = _rate_limit_delay(resp, attempt)
+        # Waiting until the token has expired would only send it expired
+        if delay is not None and _now() + timedelta(seconds=delay) >= self.expires_at:
             return None
-        # FUGA doesn't document Retry-After; if it sends one in seconds, use
-        # it, up to RETRY_AFTER_LIMIT
-        retry_after = resp.headers.get("Retry-After", "")
-        if not retry_after.isdigit():
-            return RATE_LIMIT_BACKOFF[attempt]
-        seconds = int(retry_after)
-        return seconds if seconds <= RETRY_AFTER_LIMIT else None
+        return delay
+
+
+def _rate_limit_delay(resp: requests.Response, attempt: int) -> float | None:
+    """The v3 clients' wait before resending a request FUGA rate-limited."""
+    if resp.status_code != 429 or attempt >= len(RATE_LIMIT_BACKOFF):
+        return None
+    # FUGA doesn't document Retry-After; if it sends one in seconds, use
+    # it, up to RETRY_AFTER_LIMIT
+    retry_after = resp.headers.get("Retry-After", "")
+    if not retry_after.isdigit():
+        return RATE_LIMIT_BACKOFF[attempt]
+    seconds = int(retry_after)
+    return seconds if seconds <= RETRY_AFTER_LIMIT else None
