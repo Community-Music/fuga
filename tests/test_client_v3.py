@@ -446,8 +446,9 @@ def test_after_rate_limiting_with_no_token_no_client_asks_again_for_a_while(
     assert make_client(store).get("/labels")["status_code"] == 429
     assert make_client(store).get("/labels")["status_code"] is None
 
-    assert token.call_count == 6
-    assert sleeps == [1, 2, 4, 8, 16]
+    assert token.call_count == 1
+    assert sleeps == []
+    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
 
 
 def test_a_new_token_ends_the_pause(mocked, store, clock):
@@ -592,11 +593,11 @@ def test_a_token_rejected_after_it_became_due_is_not_used_again(
         return 200, {}, "{}"
 
     mocked.add_callback("GET", f"{API_URL}/labels", callback=labels)
+    # A 429 would keep tok-1 if it were still treated as a valid token
     mocked.post(TOKEN_URL, status=429)
-    token_response(mocked, token="tok-2")
 
-    assert client.get("/labels")["success"] is True
-    assert sleeps == [1]
+    assert client.get("/labels")["status_code"] == 429
+    assert store.load() == ("", NOW + timedelta(minutes=2), NOW + timedelta(minutes=7))
     sent = [c.request.headers.get("Authorization") for c in mocked.calls]
     assert sent.count("Bearer tok-1") == 1
 
@@ -656,7 +657,7 @@ FAILURES = {
         if not (kind == "paused" and kept)
     ],
 )
-def test_a_failed_renewal(mocked, store, clock, caplog, kind, kept, entry):
+def test_a_failed_renewal(mocked, store, clock, sleeps, caplog, kind, kept, entry):
     """
     Whichever way a renewal fails, a valid token FUGA hasn't rejected is
     kept. With none, every client waits out the pause without sending tok-1.
@@ -725,6 +726,8 @@ def test_a_failed_renewal(mocked, store, clock, caplog, kind, kept, entry):
     assert make_client(store).get("/labels")["success"] is True
     sent = [c.request.headers.get("Authorization") for c in mocked.calls]
     assert sent.count("Bearer tok-1") == (1 if entry == "call after a 401" else 0)
+    # Nothing waits while holding the store's lock
+    assert sleeps == []
 
 
 # ---- the store's lock ----
@@ -836,45 +839,25 @@ def test_a_kept_token_is_renewed_after_the_retry_time(mocked, client, store, clo
     assert renewed.call_count == 1
 
 
-def test_a_rate_limited_token_request_without_a_valid_token_backs_off(
+def test_a_rate_limited_token_request_returns_the_429_without_waiting(
     mocked, client, sleeps
 ):
-    mocked.post(TOKEN_URL, status=429)
-    mocked.post(TOKEN_URL, status=429)
-    token_response(mocked)
-    mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-1"))
-
-    assert client.get("/labels")["success"] is True
-    assert sleeps == [1, 2]
-
-
-def test_a_token_request_still_rate_limited_after_backing_off_returns_the_429(
-    mocked, client, sleeps
-):
-    token = mocked.post(TOKEN_URL, json={"code": "TOO_MANY_REQUESTS"}, status=429)
+    """It runs under the store's lock, so waiting would hold up every client."""
+    token = mocked.post(
+        TOKEN_URL,
+        json={"code": "TOO_MANY_REQUESTS"},
+        status=429,
+        headers={"Retry-After": "60"},
+    )
 
     assert client.get("/labels") == {
         "success": False,
         "status_code": 429,
         "error": {"code": "TOO_MANY_REQUESTS"},
     }
-    assert sleeps == [1, 2, 4, 8, 16]
-    assert token.call_count == 6
-    assert len(mocked.calls) == 6
-
-
-def test_a_rate_limited_renewal_after_a_401_waits_rather_than_reuse_the_rejected_token(
-    mocked, client, store, sleeps
-):
-    save(store, "tok-1", EXPIRES)
-    mocked.get(f"{API_URL}/labels", status=401, match=bearer("tok-1"))
-    mocked.post(TOKEN_URL, status=429)
-    token_response(mocked, token="tok-2")
-    accepted = mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-2"))
-
-    assert client.get("/labels")["success"] is True
-    assert accepted.call_count == 1
-    assert sleeps == [1]
+    assert sleeps == []
+    assert token.call_count == 1
+    assert len(mocked.calls) == 1
 
 
 # ---- 429 on any other request: exponential backoff ----
@@ -940,28 +923,6 @@ def test_a_retry_after_at_the_limit_is_waited_for(mocked, client, store, sleeps)
 
     assert client.get("/labels")["success"] is True
     assert sleeps == [60]
-
-
-def test_a_token_request_with_a_retry_after_over_the_limit_pauses(
-    mocked, store, sleeps
-):
-    token = mocked.post(TOKEN_URL, status=429, headers={"Retry-After": "3600"})
-
-    assert make_client(store).get("/labels")["status_code"] == 429
-    assert make_client(store).get("/labels")["status_code"] is None
-    assert token.call_count == 1
-    assert sleeps == []
-
-
-def test_a_rate_limited_token_request_waits_as_long_as_retry_after_says(
-    mocked, client, sleeps
-):
-    mocked.post(TOKEN_URL, status=429, headers={"Retry-After": "12"})
-    token_response(mocked)
-    mocked.get(f"{API_URL}/labels", json={})
-
-    assert client.get("/labels")["success"] is True
-    assert sleeps == [12]
 
 
 def test_other_failures_are_not_retried(mocked, client, store, sleeps):

@@ -37,8 +37,8 @@ TOKEN_RENEWAL_MARGIN = timedelta(minutes=90)
 RENEWAL_RETRY = timedelta(minutes=5)
 
 # Seconds to wait before each retry of a v3 request FUGA rate-limited with a
-# 429. FUGA asks for exponential backoff and may ban an integration that keeps
-# calling while it is limited.
+# 429, other than a token request. FUGA asks for exponential backoff and may
+# ban an integration that keeps calling while it is limited.
 RATE_LIMIT_BACKOFF = (1, 2, 4, 8, 16)
 
 # The longest Retry-After, in seconds, a v3 client waits for. FUGA doesn't
@@ -503,7 +503,8 @@ class FUGAV3Client(BaseFUGAClient):
     halfway through its life if that is sooner. After a 401 it renews the
     token FUGA rejected, unless another client already has. Every request is
     checked, upload chunks included, and any request FUGA rate-limits is
-    retried after RATE_LIMIT_BACKOFF.
+    retried after RATE_LIMIT_BACKOFF, except a token request: that runs while
+    holding the store's lock, so a 429 there is a failed renewal.
 
     Every failed renewal, whichever of _TOKEN_FAILURES it is, follows one
     rule. If the stored token is still valid and FUGA hasn't rejected it,
@@ -512,8 +513,8 @@ class FUGAV3Client(BaseFUGAClient):
     token, so no call sends it and no call reaches FUGA until then. A call
     that got a 401 returns it, or the token endpoint's 429 if that is why,
     and ensure_token() raises FUGAAuthError. A call with no token yet raises
-    FUGAAuthError if FUGA refuses one, returns the 429 if it is still
-    rate-limited after the backoff, and otherwise returns the error.
+    FUGAAuthError if FUGA refuses one, returns the 429 if it is
+    rate-limited, and otherwise returns the error.
     """
 
     api_version = "v3"
@@ -606,8 +607,7 @@ class FUGAV3Client(BaseFUGAClient):
             ):
                 current = None
             try:
-                # Waiting out a 429 is only worth it with no token to keep
-                token = self._request_token(backoff=current is None)
+                token = self._request_token()
             except _TOKEN_FAILURES as e:
                 if current is None:
                     # An empty token whose renew_after tells every client
@@ -673,32 +673,23 @@ class FUGAV3Client(BaseFUGAClient):
         self.token = token
         self.session.headers["Authorization"] = f"Bearer {token.access_token}"
 
-    def _request_token(self, backoff: bool) -> Token:
+    def _request_token(self) -> Token:
         """
         A new token from FUGA. Raises FUGAAuthError if FUGA refuses it,
         _TokenRequestFailed if FUGA can't be reached, and _TokenRateLimited
-        on a 429: at once, or with `backoff` after the last RATE_LIMIT_BACKOFF
-        wait.
+        on a 429, without waiting: the caller holds the store's lock.
         """
-        attempt = 0
-        while True:
-            try:
-                resp = self.session.post(
-                    f"{self.api_url}/oauth/token",
-                    data={"grant_type": "client_credentials"},
-                    auth=(self.client_id, self.client_secret),
-                    timeout=TOKEN_REQUEST_TIMEOUT,
-                )
-            except requests.RequestException as e:
-                raise _TokenRequestFailed(f"Token request failed: {e}") from e
-            if resp.status_code != 429:
-                break
-            delay = self._retry_delay(resp, attempt) if backoff else None
-            if delay is None:
-                raise _TokenRateLimited(resp)
-            logger.warning("FUGA rate-limited a token request; retrying in %s s", delay)
-            time.sleep(delay)
-            attempt += 1
+        try:
+            resp = self.session.post(
+                f"{self.api_url}/oauth/token",
+                data={"grant_type": "client_credentials"},
+                auth=(self.client_id, self.client_secret),
+                timeout=TOKEN_REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            raise _TokenRequestFailed(f"Token request failed: {e}") from e
+        if resp.status_code == 429:
+            raise _TokenRateLimited(resp)
 
         try:
             body = resp.json()
