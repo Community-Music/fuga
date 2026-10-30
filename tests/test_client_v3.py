@@ -62,7 +62,9 @@ def store():
 
 def save(store, token, expires_at, renew_after=None):
     """Store a token as a renewal would: due TOKEN_RENEWAL_MARGIN before expiry."""
-    store.save(token, expires_at, renew_after or expires_at - TOKEN_RENEWAL_MARGIN)
+    store.save(
+        token, expires_at, renew_after or expires_at - TOKEN_RENEWAL_MARGIN, None
+    )
 
 
 def make_client(store, **kwargs):
@@ -120,7 +122,7 @@ def test_first_request_exchanges_the_credentials_for_a_token(
     assert request.headers["Content-Type"] == "application/x-www-form-urlencoded"
     # FUGA's Login guide: omit `scope`
     assert request.body == "grant_type=client_credentials"
-    assert store.load() == ("tok-1", EXPIRES, RENEW)
+    assert store.load() == ("tok-1", EXPIRES, RENEW, None)
     assert "Got a FUGA token" in caplog.text
 
 
@@ -167,7 +169,7 @@ def test_a_stored_token_due_for_renewal_is_renewed(mocked, client, store):
 
     assert client.get("/labels")["success"] is True
     assert token.call_count == 1
-    assert store.load() == ("new", EXPIRES, RENEW)
+    assert store.load() == ("new", EXPIRES, RENEW, None)
 
 
 def test_the_token_is_renewed_when_it_reaches_the_margin(mocked, client, clock):
@@ -200,6 +202,7 @@ def test_a_short_lived_token_is_renewed_halfway_through_its_life(
         "tok-1",
         NOW + timedelta(hours=1),
         NOW + timedelta(minutes=30),
+        None,
     )
 
     clock.advance(minutes=1)
@@ -225,7 +228,7 @@ def test_authenticate_keeps_a_token_that_is_not_due(mocked, client, store):
     client.authenticate()
 
     assert token_requests(mocked) == 0
-    assert store.load() == ("tok-1", EXPIRES, RENEW)
+    assert store.load() == ("tok-1", EXPIRES, RENEW, None)
 
 
 # ---- ensure_token ----
@@ -263,8 +266,8 @@ def test_ensure_token_refuses_a_kept_token_with_less_than_min_valid_left(
     assert client.ensure_token() == ("tok-1", NOW + timedelta(minutes=50))
     with pytest.raises(FUGAAuthError, match="less than 1:00:00"):
         client.ensure_token(min_valid=timedelta(minutes=60))
-    # The short token makes it try once more before giving up
-    assert token_requests(mocked) == 2
+    # The refusal is too recent to ask again
+    assert token_requests(mocked) == 1
 
 
 def test_ensure_token_renews_a_token_not_yet_due_with_less_than_min_valid_left(
@@ -302,7 +305,38 @@ def test_a_refused_renewal_for_min_valid_keeps_the_time_the_token_is_due(
         "tok-1",
         NOW + timedelta(minutes=55),
         NOW + timedelta(minutes=20),
+        NOW + RENEWAL_RETRY,
     )
+
+
+def test_after_a_refused_renewal_for_min_valid_no_client_asks_again_for_a_while(
+    mocked, store, clock
+):
+    """Will's review of fuga#4: one token request per hand-over while refused."""
+    # Not due yet, but too short to hand over
+    save(
+        store,
+        "tok-1",
+        NOW + timedelta(minutes=55),
+        renew_after=NOW + timedelta(minutes=20),
+    )
+    token_response(mocked, status=401, json={"code": "AUTHENTICATION_FAILED"})
+    token_response(mocked, token="tok-2")
+
+    for _ in range(2):
+        with pytest.raises(FUGAAuthError, match="less than 1:00:00"):
+            make_client(store).ensure_token(min_valid=timedelta(minutes=60))
+    assert token_requests(mocked) == 1
+    # Calls that don't need min_valid still use the kept token
+    assert make_client(store).ensure_token() == ("tok-1", NOW + timedelta(minutes=55))
+
+    clock.advance(minutes=5)
+    assert make_client(store).ensure_token(min_valid=timedelta(minutes=60)) == (
+        "tok-2",
+        EXPIRES + timedelta(minutes=5),
+    )
+    assert token_requests(mocked) == 2
+    assert store.load().paused_until is None
 
 
 def test_ensure_token_raises_when_a_new_token_is_still_too_short(mocked, client):
@@ -405,7 +439,7 @@ def test_after_a_refusal_with_no_token_no_client_asks_again_for_a_while(
     assert resp["status_code"] is None
     assert "not asking again until" in resp.get("error", {})["message"]
     assert token.call_count == 1
-    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY, NOW + RENEWAL_RETRY)
 
     clock.advance(minutes=5)
     with pytest.raises(FUGAAuthError):
@@ -433,7 +467,7 @@ def test_the_pause_survives_a_store_that_rolls_back_on_errors(mocked):
     with pytest.raises(FUGAAuthError):
         make_client(store).get("/labels")
 
-    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY, NOW + RENEWAL_RETRY)
     assert make_client(store).get("/labels")["status_code"] is None
     assert token.call_count == 1
 
@@ -448,7 +482,7 @@ def test_after_rate_limiting_with_no_token_no_client_asks_again_for_a_while(
 
     assert token.call_count == 1
     assert sleeps == []
-    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+    assert store.load() == ("", NOW, NOW + RENEWAL_RETRY, NOW + RENEWAL_RETRY)
 
 
 def test_a_new_token_ends_the_pause(mocked, store, clock):
@@ -466,6 +500,7 @@ def test_a_new_token_ends_the_pause(mocked, store, clock):
         "tok-1",
         NOW + timedelta(minutes=5, seconds=LIFETIME),
         NOW + timedelta(minutes=5, seconds=LIFETIME) - TOKEN_RENEWAL_MARGIN,
+        None,
     )
 
 
@@ -481,7 +516,12 @@ def test_a_refused_renewal_keeps_the_valid_token(mocked, client, store, caplog):
         assert client.get("/labels")["success"] is True
 
     assert labels.call_count == 1
-    assert store.load() == ("tok-1", NOW + timedelta(minutes=60), NOW + RENEWAL_RETRY)
+    assert store.load() == (
+        "tok-1",
+        NOW + timedelta(minutes=60),
+        NOW + RENEWAL_RETRY,
+        NOW + RENEWAL_RETRY,
+    )
     assert "AUTHENTICATION_FAILED" in caplog.text
     assert "keeping the current token" in caplog.text
 
@@ -497,7 +537,12 @@ def test_a_network_failure_on_renewal_keeps_the_valid_token(
         assert client.get("/labels")["success"] is True
 
     assert labels.call_count == 1
-    assert store.load() == ("tok-1", NOW + timedelta(minutes=60), NOW + RENEWAL_RETRY)
+    assert store.load() == (
+        "tok-1",
+        NOW + timedelta(minutes=60),
+        NOW + RENEWAL_RETRY,
+        NOW + RENEWAL_RETRY,
+    )
     assert "Token request failed: reset" in caplog.text
     assert "keeping the current token" in caplog.text
 
@@ -529,6 +574,7 @@ def test_a_refused_renewal_raises_once_the_token_expires(mocked, client, store, 
         "tok-1",
         NOW + timedelta(minutes=3),
         NOW + timedelta(minutes=3),
+        NOW + RENEWAL_RETRY,
     )
 
     clock.advance(minutes=3)
@@ -548,7 +594,7 @@ def test_a_401_renews_the_token_and_retries(mocked, client, store):
     assert client.get("/labels")["success"] is True
     assert rejected.call_count == 1
     assert accepted.call_count == 1
-    assert store.load() == ("tok-2", EXPIRES, RENEW)
+    assert store.load() == ("tok-2", EXPIRES, RENEW, None)
 
 
 def test_a_second_401_is_returned(mocked, client):
@@ -597,7 +643,12 @@ def test_a_token_rejected_after_it_became_due_is_not_used_again(
     mocked.post(TOKEN_URL, status=429)
 
     assert client.get("/labels")["status_code"] == 429
-    assert store.load() == ("", NOW + timedelta(minutes=2), NOW + timedelta(minutes=7))
+    assert store.load() == (
+        "",
+        NOW + timedelta(minutes=2),
+        NOW + timedelta(minutes=7),
+        NOW + timedelta(minutes=7),
+    )
     sent = [c.request.headers.get("Authorization") for c in mocked.calls]
     assert sent.count("Bearer tok-1") == 1
 
@@ -674,7 +725,7 @@ def test_a_failed_renewal(mocked, store, clock, sleeps, caplog, kind, kept, entr
     if kept:
         save(store, "tok-2", NOW + timedelta(minutes=60))  # due, still valid
     if kind == "paused":
-        store.save("", NOW, NOW + RENEWAL_RETRY)
+        store.save("", NOW, NOW + RENEWAL_RETRY, NOW + RENEWAL_RETRY)
 
     # What the caller gets
     if entry == "call after a 401":
@@ -706,13 +757,14 @@ def test_a_failed_renewal(mocked, store, clock, sleeps, caplog, kind, kept, entr
             "tok-2",
             NOW + timedelta(minutes=60),
             NOW + RENEWAL_RETRY,
+            NOW + RENEWAL_RETRY,
         )
         assert "keeping the current token" in caplog.text
         for c in (client, make_client(store)):
             assert c.get("/labels")["success"] is True
             assert c.ensure_token() == ("tok-2", NOW + timedelta(minutes=60))
     else:
-        assert store.load() == ("", NOW, NOW + RENEWAL_RETRY)
+        assert store.load() == ("", NOW, NOW + RENEWAL_RETRY, NOW + RENEWAL_RETRY)
         for c in (client, make_client(store)):
             assert "not asking again" in c.get("/labels").get("error", {})["message"]
             with pytest.raises(FUGAAuthError, match="not asking again"):
@@ -753,9 +805,9 @@ class RecordingStore(MemoryTokenStore):
         self.events.append("load")
         return super().load()
 
-    def save(self, access_token, expires_at, renew_after):
+    def save(self, access_token, expires_at, renew_after, paused_until):
         self.events.append(f"save {access_token}")
-        super().save(access_token, expires_at, renew_after)
+        super().save(access_token, expires_at, renew_after, paused_until)
 
 
 def test_the_token_is_requested_and_saved_inside_the_lock(mocked):
@@ -782,7 +834,7 @@ def test_the_token_is_requested_and_saved_inside_the_lock(mocked):
 
 def test_a_token_saved_while_waiting_for_the_lock_is_used(mocked):
     def renewed_elsewhere(store):
-        MemoryTokenStore.save(store, "tok-other", EXPIRES, RENEW)
+        MemoryTokenStore.save(store, "tok-other", EXPIRES, RENEW, None)
 
     store = RecordingStore(on_lock=renewed_elsewhere)
     labels = mocked.get(f"{API_URL}/labels", json={}, match=bearer("tok-other"))
@@ -809,7 +861,12 @@ def test_a_rate_limited_renewal_keeps_the_stored_token(
     assert token.call_count == 1
     assert labels.call_count == 2
     assert sleeps == []
-    assert store.load() == ("tok-1", NOW + timedelta(minutes=30), NOW + RENEWAL_RETRY)
+    assert store.load() == (
+        "tok-1",
+        NOW + timedelta(minutes=30),
+        NOW + RENEWAL_RETRY,
+        NOW + RENEWAL_RETRY,
+    )
     assert "Token request rate-limited; keeping the current token" in caplog.text
 
 

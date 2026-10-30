@@ -440,33 +440,42 @@ class FUGAClient(BaseFUGAClient):
 
 
 class Token(NamedTuple):
-    """A v3 access token, when it expires, and when to start renewing it."""
+    """
+    A v3 access token, when it expires, when to start renewing it, and, after
+    a failed token request, when any client may ask FUGA for one again.
+    """
 
     access_token: str
     expires_at: datetime
     renew_after: datetime
+    paused_until: datetime | None = None
 
 
 class TokenStore(Protocol):
     """
     Where a v3 client keeps its access token, supplied by the caller so that
     processes sharing a credential share its token and its renewal time.
-    `load` returns the token, its expiry and when to renew it, all
-    timezone-aware, or None if there is no token yet. An empty token is a
-    pause the client saved after a failed token request: `renew_after` says
-    when to ask again. `lock` must stop other clients renewing the same token
-    while it is held. The client calls `load`
-    outside the lock too, and `save` only inside it.
+    `load` returns the token, its expiry, when to renew it and when a failed
+    token request's pause ends, all timezone-aware, or None if there is no
+    token yet. `paused_until` is None unless the last token request failed.
+    An empty token is a pause the client saved after a failed token request
+    with no valid token to keep: `renew_after` says when to ask again. `lock`
+    must stop other clients renewing the same token while it is held. The
+    client calls `load` outside the lock too, and `save` only inside it.
     """
 
     def lock(self) -> AbstractContextManager[Any]:
         ...
 
-    def load(self) -> tuple[str, datetime, datetime] | None:
+    def load(self) -> tuple[str, datetime, datetime, datetime | None] | None:
         ...
 
     def save(
-        self, access_token: str, expires_at: datetime, renew_after: datetime
+        self,
+        access_token: str,
+        expires_at: datetime,
+        renew_after: datetime,
+        paused_until: datetime | None,
     ) -> None:
         ...
 
@@ -481,13 +490,17 @@ class MemoryTokenStore:
     def lock(self) -> AbstractContextManager[Any]:
         return self._lock
 
-    def load(self) -> tuple[str, datetime, datetime] | None:
+    def load(self) -> tuple[str, datetime, datetime, datetime | None] | None:
         return self._token
 
     def save(
-        self, access_token: str, expires_at: datetime, renew_after: datetime
+        self,
+        access_token: str,
+        expires_at: datetime,
+        renew_after: datetime,
+        paused_until: datetime | None,
     ) -> None:
-        self._token = Token(access_token, expires_at, renew_after)
+        self._token = Token(access_token, expires_at, renew_after, paused_until)
 
 
 def _now() -> datetime:
@@ -510,9 +523,12 @@ class FUGAV3Client(BaseFUGAClient):
     rule. If the stored token is still valid and FUGA hasn't rejected it,
     every client keeps it for RENEWAL_RETRY before asking again. Otherwise the
     store holds a pause until RENEWAL_RETRY from now and the client drops its
-    token, so no call sends it and no call reaches FUGA until then. A call
-    that got a 401 returns it, or the token endpoint's 429 if that is why,
-    and ensure_token() raises FUGAAuthError. A call with no token yet raises
+    token, so no call sends it and no call reaches FUGA until then. Either
+    way the store records when the pause ends, so ensure_token() with a
+    `min_valid` the kept token can't meet doesn't ask FUGA again before then
+    either. A call that got a 401 returns it, or the token endpoint's 429 if
+    that is why, and ensure_token() raises FUGAAuthError. A call with no
+    token yet raises
     FUGAAuthError if FUGA refuses one, returns the 429 if it is
     rate-limited, and otherwise returns the error.
     """
@@ -551,7 +567,9 @@ class FUGAV3Client(BaseFUGAClient):
         `min_valid` left. Raises FUGAAuthError if there is no valid token and
         FUGA won't give one or can't be reached, or if the token still has
         less than `min_valid` left, which can happen when FUGA refuses
-        renewals or issues tokens that short. A caller handing the token to a
+        renewals or issues tokens that short. After a refused renewal it
+        doesn't ask FUGA again until RENEWAL_RETRY has passed, and raises
+        with the token it has. A caller handing the token to a
         process that can't renew it passes that process's longest run.
         """
         if (
@@ -616,7 +634,8 @@ class FUGAV3Client(BaseFUGAClient):
                     # back on an error, such as a database transaction, keeps
                     # it.
                     now = _now()
-                    self.token_store.save("", now, now + RENEWAL_RETRY)
+                    pause = now + RENEWAL_RETRY
+                    self.token_store.save("", now, pause, pause)
                     failure = e
                 else:
                     logger.log(
@@ -640,7 +659,7 @@ class FUGAV3Client(BaseFUGAClient):
 
     def _use_stored_token(
         self,
-        stored: tuple[str, datetime, datetime] | None,
+        stored: tuple[str, datetime, datetime, datetime | None] | None,
         rejected: str | None,
         min_valid: timedelta = timedelta(0),
     ) -> bool:
@@ -652,14 +671,20 @@ class FUGAV3Client(BaseFUGAClient):
             not token.access_token
             or token.access_token == rejected
             or now >= token.renew_after
-            or token.expires_at - now < min_valid
         ):
+            return False
+        # Too short for min_valid: renew it, unless a token request failed
+        # too recently to ask again, in which case ensure_token() raises
+        paused = token.paused_until is not None and now < token.paused_until
+        if token.expires_at - now < min_valid and not paused:
             return False
         self._use_token(token)
         return True
 
     @staticmethod
-    def _check_not_paused(stored: tuple[str, datetime, datetime] | None) -> None:
+    def _check_not_paused(
+        stored: tuple[str, datetime, datetime, datetime | None] | None,
+    ) -> None:
         if stored is None:
             return
         token = Token(*stored)
@@ -727,8 +752,11 @@ class FUGAV3Client(BaseFUGAClient):
     def _put_off(token: Token) -> Token:
         # Never earlier than the token was already due, such as after a
         # renewal ensure_token() forced for min_valid
-        renew_after = max(token.renew_after, _now() + RENEWAL_RETRY)
-        return token._replace(renew_after=min(renew_after, token.expires_at))
+        pause = _now() + RENEWAL_RETRY
+        renew_after = max(token.renew_after, pause)
+        return token._replace(
+            renew_after=min(renew_after, token.expires_at), paused_until=pause
+        )
 
     def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
         if resp.status_code != 429 or attempt >= len(RATE_LIMIT_BACKOFF):
