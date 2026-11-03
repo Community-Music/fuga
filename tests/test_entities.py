@@ -8,10 +8,11 @@ from unittest.mock import MagicMock
 import pytest
 from responses import matchers
 
-from fuga.api import BaseFUGAClient
+from fuga.api import BaseFUGAClient, FUGAV3Client
 from fuga.artist import FUGAArtist
 from fuga.asset import FUGAAsset
 from fuga.delivery_instructions import FUGADeliveryInstructions
+from fuga.dsp import FUGADSP
 from fuga.entity import requires_id
 from fuga.label import FUGALabel
 from fuga.misc import FUGAMisc
@@ -24,6 +25,7 @@ from fuga.response import FugaResponse
 from .conftest import API_URL
 
 BODY = {"name": "Example"}
+CONTRIBUTOR = {"person_id": 456, "roles": ["COMPOSER"], "instruments": ["PIANO"]}
 PAGE = {"page": "0", "page_size": "10"}
 
 
@@ -38,6 +40,23 @@ class Case:
     body: Any = None
     query: Any = None
     id_name: str | None = None  # set when the call needs an id
+    v3: bool = False  # run through the v3 client
+
+
+class V3Client(BaseFUGAClient):
+    """Stands in for the v3 client: same HTTP layer, no login."""
+
+    api_version = "v3"
+
+    def _is_authenticated(self):
+        return True
+
+    def authenticate(self):
+        pass
+
+
+def client_for(case, client):
+    return V3Client(API_URL) if case.v3 else client
 
 
 def entity_cases(cls, entity_id, id_name, base, *, list_query=PAGE):
@@ -103,6 +122,69 @@ CASES = [
         "/products/p1/assets/a1",
         body=BODY,
         id_name="asset_id",
+    ),
+    Case(
+        "FUGAAsset.fetch_contributors",
+        FUGAAsset,
+        "a1",
+        lambda e: e.fetch_contributors(),
+        "GET",
+        "/assets/a1/contributors",
+        id_name="asset_id",
+        v3=True,
+    ),
+    Case(
+        "FUGAAsset.replace_contributors",
+        FUGAAsset,
+        "a1",
+        lambda e: e.replace_contributors([CONTRIBUTOR]),
+        "PUT",
+        "/assets/a1/contributors",
+        body=[CONTRIBUTOR],
+        id_name="asset_id",
+        v3=True,
+    ),
+    Case(
+        "FUGAAsset.replace_contributors(empty)",
+        FUGAAsset,
+        "a1",
+        lambda e: e.replace_contributors([]),
+        "PUT",
+        "/assets/a1/contributors",
+        body=[],
+        id_name="asset_id",
+        v3=True,
+    ),
+    Case(
+        "FUGAAsset.save_contributor",
+        FUGAAsset,
+        "a1",
+        lambda e: e.save_contributor(CONTRIBUTOR),
+        "POST",
+        "/assets/a1/contributors",
+        body=CONTRIBUTOR,
+        id_name="asset_id",
+        v3=True,
+    ),
+    Case(
+        "FUGAAsset.fetch_contributor",
+        FUGAAsset,
+        "a1",
+        lambda e: e.fetch_contributor("456"),
+        "GET",
+        "/assets/a1/contributors/456",
+        id_name="asset_id",
+        v3=True,
+    ),
+    Case(
+        "FUGAAsset.remove_contributor",
+        FUGAAsset,
+        "a1",
+        lambda e: e.remove_contributor("456"),
+        "DELETE",
+        "/assets/a1/contributors/456",
+        id_name="asset_id",
+        v3=True,
     ),
     Case(
         "FUGAAsset.fetch_roles",
@@ -516,6 +598,26 @@ CASES = [
             ("fetch_lead_times", "lead_times"),
         ]
     ],
+    Case(
+        "FUGADSP.fetch_list",
+        lambda c, _: FUGADSP(c),
+        None,
+        lambda e: e.fetch_list(),
+        "GET",
+        "/dsps",
+        query={},
+        v3=True,
+    ),
+    Case(
+        "FUGADSP.fetch_list(delivery_capability)",
+        lambda c, _: FUGADSP(c),
+        None,
+        lambda e: e.fetch_list(delivery_capability="ARTIST_IDENTIFIER"),
+        "GET",
+        "/dsps",
+        query={"delivery_capability": "ARTIST_IDENTIFIER"},
+        v3=True,
+    ),
 ]
 
 
@@ -528,7 +630,7 @@ def test_endpoint(mocked, client, case):
         match.append(matchers.query_param_matcher(case.query))
     mocked.add(case.method, f"{API_URL}{case.path}", json={"ok": True}, match=match)
 
-    resp = case.invoke(case.make(client, case.entity_id))
+    resp = case.invoke(case.make(client_for(case, client), case.entity_id))
 
     assert resp == {"success": True, "status_code": 200, "data": {"ok": True}}
     if case.body is None:
@@ -537,7 +639,7 @@ def test_endpoint(mocked, client, case):
 
 @pytest.mark.parametrize("case", [c for c in CASES if c.id_name], ids=lambda c: c.name)
 def test_calls_without_an_id_fail_without_a_request(mocked, client, case):
-    resp = case.invoke(case.make(client, None))
+    resp = case.invoke(case.make(client_for(case, client), None))
 
     assert resp == {
         "success": False,
@@ -547,12 +649,12 @@ def test_calls_without_an_id_fail_without_a_request(mocked, client, case):
     assert len(mocked.calls) == 0
 
 
-def id_arg_case(name, invoke, arg_name):
-    return pytest.param(invoke, arg_name, id=name)
+def id_arg_case(name, invoke, arg_name, *, v3=False):
+    return pytest.param(invoke, arg_name, v3, id=name)
 
 
 @pytest.mark.parametrize(
-    ("invoke", "arg_name"),
+    ("invoke", "arg_name", "v3"),
     [
         id_arg_case(
             "FUGAAsset.attach_to_product",
@@ -563,6 +665,18 @@ def id_arg_case(name, invoke, arg_name):
             "FUGAAsset.remove_publisher",
             lambda c: FUGAAsset(c, "a1").remove_publisher(""),
             "publisher_id",
+        ),
+        id_arg_case(
+            "FUGAAsset.fetch_contributor",
+            lambda c: FUGAAsset(c, "a1").fetch_contributor(""),
+            "person_id",
+            v3=True,
+        ),
+        id_arg_case(
+            "FUGAAsset.remove_contributor",
+            lambda c: FUGAAsset(c, "a1").remove_contributor(""),
+            "person_id",
+            v3=True,
         ),
         id_arg_case(
             "FUGAAsset.remove_role",
@@ -614,9 +728,9 @@ def id_arg_case(name, invoke, arg_name):
     ],
 )
 def test_calls_without_an_id_argument_fail_without_a_request(
-    mocked, client, invoke, arg_name
+    mocked, client, invoke, arg_name, v3
 ):
-    resp = invoke(client)
+    resp = invoke(V3Client(API_URL) if v3 else client)
 
     assert resp == {
         "success": False,
@@ -948,21 +1062,11 @@ def test_media_calls_need_an_id(mocked, client, media_file, invoke, id_name):
 # ---- v2-only methods ----
 
 
-class V3Client(BaseFUGAClient):
-    """Stands in for the v3 client: same HTTP layer, no login."""
-
-    api_version = "v3"
-
-    def _is_authenticated(self):
-        return True
-
-    def authenticate(self):
-        pass
-
-
 @pytest.mark.parametrize(
     ("name", "invoke"),
     [
+        ("fetch_roles", lambda a: a.fetch_roles()),
+        ("add_role", lambda a: a.add_role(BODY)),
         ("remove_role", lambda a: a.remove_role("c1")),
         ("fetch_instrument_performers", lambda a: a.fetch_instrument_performers()),
         ("add_instrument_performer", lambda a: a.add_instrument_performer(BODY)),
@@ -981,11 +1085,67 @@ def test_v2_only_methods_fail_on_another_version(mocked, name, invoke):
 
 
 def test_shared_methods_work_on_another_version(mocked):
-    mocked.get(f"{API_URL}/assets/a1/contributors", json={"contributors": []})
+    mocked.get(f"{API_URL}/assets/a1/publishers", json={"publisher": []})
 
-    resp = FUGAAsset(V3Client(API_URL), "a1").fetch_roles()
+    resp = FUGAAsset(V3Client(API_URL), "a1").fetch_publishers()
 
     assert resp["success"] is True
+
+
+# ---- v3-only methods ----
+
+
+@pytest.mark.parametrize(
+    ("name", "invoke"),
+    [
+        ("fetch_contributors", lambda c: FUGAAsset(c, "a1").fetch_contributors()),
+        (
+            "replace_contributors",
+            lambda c: FUGAAsset(c, "a1").replace_contributors([CONTRIBUTOR]),
+        ),
+        (
+            "save_contributor",
+            lambda c: FUGAAsset(c, "a1").save_contributor(CONTRIBUTOR),
+        ),
+        ("fetch_contributor", lambda c: FUGAAsset(c, "a1").fetch_contributor("456")),
+        ("remove_contributor", lambda c: FUGAAsset(c, "a1").remove_contributor("456")),
+        ("fetch_list", lambda c: FUGADSP(c).fetch_list()),
+    ],
+)
+def test_v3_only_methods_fail_on_another_version(mocked, client, name, invoke):
+    resp = invoke(client)
+
+    assert resp == {
+        "success": False,
+        "status_code": None,
+        "error": {"message": f"{name} is only available in FUGA API v3, not v2"},
+    }
+    assert len(mocked.calls) == 0
+
+
+def test_v3_only_methods_reach_a_mocked_v3_client():
+    client = MagicMock(api_version="v3")
+
+    FUGAAsset(client, "a1").remove_contributor("456")
+
+    client.delete.assert_called_once_with("/assets/a1/contributors/456")
+
+
+@pytest.mark.parametrize(
+    "client",
+    [MagicMock(), MagicMock(api_version=3), MagicMock(spec=["get"])],
+    ids=["mock-without-a-version", "non-string-version", "no-version-attribute"],
+)
+def test_v3_only_methods_refuse_a_client_that_is_not_v3(client):
+    resp = FUGADSP(client).fetch_list()
+
+    assert resp["success"] is False
+    assert "only available in FUGA API v3" in resp.get("error", {})["message"]
+    client.get.assert_not_called()
+
+
+def test_the_stand_in_has_the_real_v3_clients_version():
+    assert V3Client.api_version == FUGAV3Client.api_version == "v3"
 
 
 # ---- subgenres: every page unless a limit is given ----
