@@ -51,6 +51,12 @@ RETRY_AFTER_LIMIT = 60
 # the store for at most 30 s per read rather than DEFAULT_TIMEOUT's 300 s.
 TOKEN_REQUEST_TIMEOUT = (DEFAULT_TIMEOUT[0], 30)
 
+# The timeout for each chunk of an upload. requests sends a request body under
+# the first value, the connect timeout, so with DEFAULT_TIMEOUT a 6 MB chunk
+# that took more than 10 s to send failed the whole upload (a 1.4 GB music
+# video, 4 November 2026). 60 s is what fuga v0.5.13 gave each chunk.
+UPLOAD_CHUNK_TIMEOUT = (60, DEFAULT_TIMEOUT[1])
+
 
 class FUGAAuthError(ValueError):
     """
@@ -110,8 +116,8 @@ class BaseFUGAClient(ABC):
     A request authenticates first if it needs to, and on a 401 calls
     `_reauthenticate` and retries once when the subclass can. Then
     `_retry_delay` decides whether to wait and send it again; by default it
-    never does. Every request, login and upload chunks included, uses
-    `timeout`, except a v3 token request. Calls return a FugaResponse and
+    never does. Every request, login included, uses `timeout`, except a v3
+    token request and an upload chunk, which have their own. Calls return a FugaResponse and
     never raise, with one exception: when a client has no usable login or
     token and FUGA refuses to give it one, it raises FUGAAuthError. If the
     re-login after a 401 fails in any of the _TOKEN_FAILURES ways, the call
@@ -151,7 +157,13 @@ class BaseFUGAClient(ABC):
         """
         return None
 
-    def _send(self, method: str, endpoint: str, **kwargs: Any) -> requests.Response:
+    def _send(
+        self,
+        method: str,
+        endpoint: str,
+        timeout: Timeout | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
         try:
             if not self._is_authenticated():
                 self.authenticate()
@@ -161,7 +173,9 @@ class BaseFUGAClient(ABC):
         reauthenticated = False
         attempt = 0
         while True:
-            resp = self.session.request(method, url, timeout=self.timeout, **kwargs)
+            resp = self.session.request(
+                method, url, timeout=timeout or self.timeout, **kwargs
+            )
             if (
                 resp.status_code == 401
                 and not reauthenticated
@@ -358,7 +372,13 @@ class BaseFUGAClient(ABC):
                     "Content-Range": f"bytes {offset}-{offset + len(chunk) - 1}/{total_size}"
                 }
 
-                part = self._request("POST", "/upload", headers=headers, files=files)
+                part = self._request(
+                    "POST",
+                    "/upload",
+                    headers=headers,
+                    files=files,
+                    timeout=UPLOAD_CHUNK_TIMEOUT,
+                )
                 if not part["success"]:
                     return part
 

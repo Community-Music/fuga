@@ -12,7 +12,7 @@ A Python client for FUGA's Catalog API: products, assets, artists, labels, peopl
 In another project, pin a release tag:
 
 ```zsh
-pip install "git+https://github.com/Community-Music/fuga.git@v1.6.0#egg=fuga"
+pip install "git+https://github.com/Community-Music/fuga.git@v1.6.1#egg=fuga"
 ```
 
 To work on the package itself:

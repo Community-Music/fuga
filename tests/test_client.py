@@ -5,7 +5,7 @@ import pytest
 import requests
 from responses import matchers
 
-from fuga.api import DEFAULT_TIMEOUT, FUGAAuthError, FUGAClient
+from fuga.api import DEFAULT_TIMEOUT, UPLOAD_CHUNK_TIMEOUT, FUGAAuthError, FUGAClient
 
 from .conftest import API_URL, COOKIE
 
@@ -586,7 +586,7 @@ def test_upload_chunk_network_error_is_returned(mocked, client, audio_file):
 # ---- timeouts ----
 
 
-def test_every_request_uses_the_default_timeout(mocked, audio_file):
+def test_every_request_but_upload_chunks_uses_the_default_timeout(mocked, audio_file):
     login_response(mocked)
     mocked.get(f"{API_URL}/labels", json={})
     mocked.get(f"{API_URL}/assets/1/audio", body=b"RIFF")
@@ -599,11 +599,38 @@ def test_every_request_uses_the_default_timeout(mocked, audio_file):
         str(audio_file), {"id": "asset-1", "type": "audio"}, chunk_size=4
     )
 
-    paths = [c.request.path_url for c in mocked.calls]
-    assert paths[0] == "/api/v2/login"
-    assert "/api/v2/upload" in paths
-    assert {c.request.req_kwargs["timeout"] for c in mocked.calls} == {DEFAULT_TIMEOUT}
+    timeouts = [
+        (c.request.path_url, c.request.req_kwargs["timeout"]) for c in mocked.calls
+    ]
+    assert timeouts == [
+        ("/api/v2/login", DEFAULT_TIMEOUT),
+        ("/api/v2/labels", DEFAULT_TIMEOUT),
+        ("/api/v2/assets/1/audio", DEFAULT_TIMEOUT),
+        ("/api/v2/upload/start", DEFAULT_TIMEOUT),
+        ("/api/v2/upload", UPLOAD_CHUNK_TIMEOUT),
+        ("/api/v2/upload", UPLOAD_CHUNK_TIMEOUT),
+        ("/api/v2/upload", UPLOAD_CHUNK_TIMEOUT),
+        ("/api/v2/upload/finish", DEFAULT_TIMEOUT),
+    ]
     assert DEFAULT_TIMEOUT == (10, 300)
+
+
+def test_an_upload_chunk_gets_60_seconds_to_send(mocked, audio_file):
+    """
+    requests sends the body under the connect timeout, so a chunk on a slow
+    link needs more than DEFAULT_TIMEOUT's 10 s. A client timeout doesn't
+    shorten it.
+    """
+    register_upload(mocked)
+
+    client = FUGAClient(API_URL, auth_cookie=COOKIE, timeout=(5, 60))
+    client.upload_file(
+        str(audio_file), {"id": "asset-1", "type": "audio"}, chunk_size=4
+    )
+
+    chunks = [c.request for c in mocked.calls if c.request.url.endswith("/upload")]
+    assert [c.req_kwargs["timeout"] for c in chunks] == [UPLOAD_CHUNK_TIMEOUT] * 3
+    assert UPLOAD_CHUNK_TIMEOUT == (60, 300)
 
 
 def test_timeout_can_be_set_on_the_client(mocked):
