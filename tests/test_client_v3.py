@@ -13,6 +13,7 @@ from fuga.api import (
     RENEWAL_RETRY,
     TOKEN_RENEWAL_MARGIN,
     TOKEN_REQUEST_TIMEOUT,
+    UPLOAD_CHUNK_TIMEOUT,
     FUGAAuthError,
     FUGAV3Client,
     FUGAV3TokenClient,
@@ -1200,4 +1201,25 @@ def test_token_client_upload_stops_at_the_first_chunk_after_expiry(
     assert [c.request.path_url for c in mocked.calls] == [
         "/api/v3/upload/start",
         "/api/v3/upload",
+    ]
+
+
+def test_token_client_upload_chunks_have_their_own_timeout(mocked, audio_file):
+    """The video uploader sends 6 MB chunks; each gets UPLOAD_CHUNK_TIMEOUT."""
+    mocked.post(f"{API_URL}/upload/start", json={"id": "upload-1"})
+    mocked.post(f"{API_URL}/upload", json={"success": True})
+    mocked.post(f"{API_URL}/upload/finish", json={"success": True})
+
+    token_client().upload_file(
+        str(audio_file), {"id": "asset-1", "type": "video"}, chunk_size=4
+    )
+
+    assert [
+        (c.request.path_url, c.request.req_kwargs["timeout"]) for c in mocked.calls
+    ] == [
+        ("/api/v3/upload/start", DEFAULT_TIMEOUT),
+        ("/api/v3/upload", UPLOAD_CHUNK_TIMEOUT),
+        ("/api/v3/upload", UPLOAD_CHUNK_TIMEOUT),
+        ("/api/v3/upload", UPLOAD_CHUNK_TIMEOUT),
+        ("/api/v3/upload/finish", DEFAULT_TIMEOUT),
     ]
