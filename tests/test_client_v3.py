@@ -98,10 +98,6 @@ def token_requests(mocked):
 # ---- getting a token ----
 
 
-def test_client_is_v3():
-    assert FUGAV3Client.api_version == "v3"
-
-
 def test_constructor_does_not_request_a_token(mocked, store):
     make_client(store)
 
@@ -1073,15 +1069,42 @@ def test_upload_chunk_401_renews_the_token_and_resends_the_chunk(
     assert [multipart_field(r.body, "file") for r in chunks] == [b"abcdefghij"] * 2
 
 
+def test_get_binary_401_renews_the_token_and_retries(mocked, client):
+    token_response(mocked, token="tok-1")
+    token_response(mocked, token="tok-2")
+    mocked.get(f"{API_URL}/assets/1/audio", status=401, match=bearer("tok-1"))
+    mocked.get(f"{API_URL}/assets/1/audio", body=b"RIFF", match=bearer("tok-2"))
+
+    resp = client.get_binary("/assets/1/audio")
+
+    assert resp["success"] is True
+    assert resp.get("data") == b"RIFF"
+    assert token_requests(mocked) == 2
+
+
+def test_upload_start_401_renews_the_token_and_retries(mocked, client, audio_file):
+    token_response(mocked, token="tok-1")
+    token_response(mocked, token="tok-2")
+    mocked.post(f"{API_URL}/upload/start", status=401, match=bearer("tok-1"))
+    mocked.post(
+        f"{API_URL}/upload/start", json={"id": "upload-1"}, match=bearer("tok-2")
+    )
+    mocked.post(f"{API_URL}/upload", body="ok")
+    mocked.post(f"{API_URL}/upload/finish", json=True)
+
+    resp = client.upload_file(
+        str(audio_file), {"id": "asset-1", "type": "audio"}, chunk_size=100
+    )
+
+    assert resp["success"] is True
+    assert token_requests(mocked) == 2
+
+
 # ---- the token-only client, for the video uploader ----
 
 
 def token_client():
     return FUGAV3TokenClient(API_URL, "given-1", EXPIRES)
-
-
-def test_token_client_is_v3():
-    assert FUGAV3TokenClient.api_version == "v3"
 
 
 def test_token_client_sends_the_token_it_was_given(mocked):
