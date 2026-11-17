@@ -3,18 +3,19 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
-from fuga.api import FUGAClient
+from fuga.api import FUGAV3Client, MemoryTokenStore
 from fuga.trends import FUGATrends
 
 load_dotenv()
 
-USERNAME = os.getenv("FUGA_USERNAME")
-PASSWORD = os.getenv("FUGA_PASSWORD")
+CLIENT_ID = os.getenv("FUGA_CLIENT_ID")
+CLIENT_SECRET = os.getenv("FUGA_CLIENT_SECRET")
 
-api = FUGAClient(
-    api_url="https://next.fugamusic.com/api/v2",
-    username=USERNAME,
-    password=PASSWORD,
+api = FUGAV3Client(
+    api_url="https://next.fugamusic.com/api/v3",
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    token_store=MemoryTokenStore(),
 )
 
 # get 1 hour ago from now (UTC)

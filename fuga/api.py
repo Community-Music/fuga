@@ -22,9 +22,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = (10, 300)
 Timeout = float | tuple[float, float]
 
-# The v2 login sets this cookie, and every later request must send it.
-SESSION_COOKIE = "connect.sid"
-
 # A v3 token with less than this left is renewed before it is used, or halfway
 # through its life if it is shorter. A video upload can run for 60 minutes,
 # and the video uploader can't renew the token cm-backend hands it.
@@ -59,11 +56,7 @@ UPLOAD_CHUNK_TIMEOUT = (60, DEFAULT_TIMEOUT[1])
 
 
 class FUGAAuthError(ValueError):
-    """
-    FUGA refused the login, or there is nothing to log in with. It subclasses
-    ValueError, which login failures raised before, so existing handlers still
-    catch it.
-    """
+    """FUGA refused to give a token, or wouldn't keep one valid long enough."""
 
 
 class _TokenRateLimited(Exception):
@@ -90,9 +83,8 @@ class _TokenRequestFailed(requests.RequestException):
 
 
 # Every way getting a token can fail: FUGA refuses it, rate-limits the
-# request, or can't be reached, or an earlier failure's pause is still on. A
-# v3 client handles them all alike (see FUGAV3Client); for v2 only a refused
-# login applies.
+# request, or can't be reached, or an earlier failure's pause is still on.
+# FUGAV3Client handles them all alike.
 _TOKEN_FAILURES = (FUGAAuthError, _TokenRateLimited, _TokenRequestFailed, _TokenPaused)
 
 
@@ -106,7 +98,7 @@ class _TokenExpired(requests.RequestException):
 
 class BaseFUGAClient(ABC):
     """
-    The HTTP layer shared by every FUGA API version.
+    The HTTP layer shared by the FUGA clients.
 
     Subclasses supply authentication through `_is_authenticated` and
     `authenticate`, which they must override, and `_can_reauthenticate` and
@@ -116,17 +108,13 @@ class BaseFUGAClient(ABC):
     A request authenticates first if it needs to, and on a 401 calls
     `_reauthenticate` and retries once when the subclass can. Then
     `_retry_delay` decides whether to wait and send it again; by default it
-    never does. Every request, login included, uses `timeout`, except a v3
-    token request and an upload chunk, which have their own. Calls return a FugaResponse and
-    never raise, with one exception: when a client has no usable login or
-    token and FUGA refuses to give it one, it raises FUGAAuthError. If the
-    re-login after a 401 fails in any of the _TOKEN_FAILURES ways, the call
-    returns the 401, or the token endpoint's 429 if that is why.
+    never does. Every request uses `timeout`, except a token request and an
+    upload chunk, which have their own. Calls return a FugaResponse and never
+    raise, with one exception: when a client has no usable token and FUGA
+    refuses to give it one, it raises FUGAAuthError. If renewing the token
+    after a 401 fails in any of the _TOKEN_FAILURES ways, the call returns
+    the 401, or the token endpoint's 429 if that is why.
     """
-
-    # "v2" or "v3", set by each subclass. v2-only methods refuse any client
-    # that doesn't set "v2".
-    api_version: str
 
     def __init__(self, api_url: str, timeout: Timeout = DEFAULT_TIMEOUT) -> None:
         self.api_url = api_url.rstrip("/")
@@ -146,7 +134,7 @@ class BaseFUGAClient(ABC):
         return False
 
     def _reauthenticate(self) -> None:
-        """Authenticate again after FUGA answered 401 to the current login."""
+        """Authenticate again after FUGA answered 401 to the current token."""
         self.authenticate()
 
     def _retry_delay(self, resp: requests.Response, attempt: int) -> float | None:
@@ -185,8 +173,8 @@ class BaseFUGAClient(ABC):
                 try:
                     self._reauthenticate()
                 except _TOKEN_FAILURES as e:
-                    # The caller gets FUGA's 401 to act on, as before re-login
-                    # existed, or the token endpoint's 429 if that is why
+                    # The caller gets FUGA's 401 to act on, or the token
+                    # endpoint's 429 if that is why
                     return e.response if isinstance(e, _TokenRateLimited) else resp
                 continue
             delay = self._retry_delay(resp, attempt)
@@ -408,65 +396,6 @@ class BaseFUGAClient(ABC):
         return finish
 
 
-class FUGAClient(BaseFUGAClient):
-    """
-    FUGA API v2. Logs in with a username and password and sends the session
-    cookie, or uses a cookie it is given. Logs in on the first request that
-    needs it, or when `login()` is called. Given a cookie and credentials, it
-    starts with the cookie and logs in again if FUGA rejects it.
-    """
-
-    api_version = "v2"
-
-    def __init__(
-        self,
-        api_url: str,
-        username: str | None = None,
-        password: str | None = None,
-        auth_cookie: str | None = None,
-        timeout: Timeout = DEFAULT_TIMEOUT,
-    ) -> None:
-        super().__init__(api_url, timeout)
-        self.auth_cookie = auth_cookie
-        self.credentials: dict[str, str] | None = None
-
-        if username and password:
-            self.credentials = {"name": username, "password": password}
-
-        if self.auth_cookie:
-            self.session.headers["Cookie"] = self.auth_cookie
-        elif self.credentials is None:
-            raise ValueError("Either auth_cookie or username/password must be provided")
-
-    def login(self) -> None:
-        if self.credentials is None:
-            raise FUGAAuthError("No username and password to log in with")
-
-        resp = self.session.post(
-            f"{self.api_url}/login", json=self.credentials, timeout=self.timeout
-        )
-        if resp.status_code != 200:
-            raise FUGAAuthError(f"Login failed: {resp.status_code} {resp.text}")
-
-        # The reply may set other cookies too, such as a load balancer's
-        session_id = resp.cookies.get(SESSION_COOKIE)
-        if not session_id:
-            raise FUGAAuthError("Login succeeded but FUGA set no session cookie")
-
-        cookie = f"{SESSION_COOKIE}={session_id}"
-        self.auth_cookie = cookie
-        self.session.headers["Cookie"] = cookie
-
-    def _is_authenticated(self) -> bool:
-        return bool(self.auth_cookie)
-
-    def authenticate(self) -> None:
-        self.login()
-
-    def _can_reauthenticate(self) -> bool:
-        return self.credentials is not None
-
-
 class Token(NamedTuple):
     """
     A v3 access token, when it expires, when to start renewing it, and, after
@@ -560,8 +489,6 @@ class FUGAV3Client(BaseFUGAClient):
     FUGAAuthError if FUGA refuses one, returns the 429 if it is
     rate-limited, and otherwise returns the error.
     """
-
-    api_version = "v3"
 
     def __init__(
         self,
@@ -802,8 +729,6 @@ class FUGAV3TokenClient(BaseFUGAClient):
 
     `expires_at` must include a timezone, or the client refuses it.
     """
-
-    api_version = "v3"
 
     def __init__(
         self,
